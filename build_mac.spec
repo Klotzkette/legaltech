@@ -2,8 +2,8 @@
 """
 PyInstaller build spec for Tom's Super Simple Word-Gliederungs-Retter.
 
-Windows ONE-FILE executable.
-Run with:  pyinstaller build.spec --noconfirm
+macOS .app bundle.
+Run with:  pyinstaller build_mac.spec --noconfirm
 """
 
 import os
@@ -59,8 +59,6 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=['tkinter', 'matplotlib', 'numpy', 'scipy', 'pandas'],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
@@ -78,13 +76,26 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
+    upx=False,
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+app = BUNDLE(
+    exe,
+    name='Word-Gliederungs-Retter.app',
     icon=None,
+    bundle_identifier='com.toms.wordgliederungsretter',
+    info_plist={
+        'CFBundleDisplayName': "Word-Gliederungs-Retter",
+        'CFBundleShortVersionString': '1.0.0',
+        'CFBundleVersion': '1.0.0',
+        'NSHighResolutionCapable': True,
+        'LSMinimumSystemVersion': '11.0',
+        'NSRequiresAquaSystemAppearance': False,
+    },
 )

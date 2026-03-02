@@ -7,3 +7,7 @@ build/
 *.spec.bak
 .env
 *.exe
+*.app
+*.dmg
+venv/
+.venv/

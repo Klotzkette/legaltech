@@ -1,0 +1,116 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Windows EXE
+  # ─────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build Windows EXE
+        run: pyinstaller build.spec --noconfirm --clean
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Word-Gliederungs-Retter-Windows
+          path: dist/Word-Gliederungs-Retter.exe
+
+  # ─────────────────────────────────────────────────────────────
+  # macOS .app
+  # ─────────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build macOS .app
+        run: pyinstaller build_mac.spec --noconfirm --clean
+
+      - name: Create ZIP of .app bundle
+        run: |
+          cd dist
+          zip -r Word-Gliederungs-Retter-macOS.zip "Word-Gliederungs-Retter.app"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Word-Gliederungs-Retter-macOS
+          path: dist/Word-Gliederungs-Retter-macOS.zip
+
+  # ─────────────────────────────────────────────────────────────
+  # Create GitHub Release (only on tag push)
+  # ─────────────────────────────────────────────────────────────
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Word-Gliederungs-Retter-Windows
+          path: artifacts/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Word-Gliederungs-Retter-macOS
+          path: artifacts/macos
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Word-Gliederungs-Retter ${{ github.ref_name }}"
+          body: |
+            ## Tom's Super Simple Word-Gliederungs-Retter ${{ github.ref_name }}
+
+            Automatische Gliederungsstandardisierung für Word-Dokumente.
+            Alle Überschriften werden auf **1. / 1.1 / 1.1.1 …** umgestellt.
+
+            ### Downloads
+
+            | Plattform | Datei |
+            |-----------|-------|
+            | Windows   | `Word-Gliederungs-Retter.exe` |
+            | macOS     | `Word-Gliederungs-Retter-macOS.zip` (enthält .app) |
+
+            ### Anleitung
+            - **Windows:** `.exe` herunterladen und direkt starten (keine Installation nötig).
+            - **macOS:** `.zip` entpacken, `.app` in den Programme-Ordner ziehen.
+
+            Optional: OpenAI API-Key in den Einstellungen hinterlegen für KI-gestützte Erkennung (GPT-5.2).
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/windows/Word-Gliederungs-Retter.exe
+            artifacts/macos/Word-Gliederungs-Retter-macOS.zip

@@ -1,6 +1,7 @@
 @echo off
 echo ============================================================
 echo  Tom's Super Simple Word-Gliederungs-Retter - Build Script
+echo  Windows One-File EXE
 echo ============================================================
 echo.
 
@@ -15,7 +16,7 @@ if errorlevel 1 (
 
 echo.
 echo [2/3] Baue Windows-EXE mit PyInstaller...
-pyinstaller build.spec --noconfirm
+pyinstaller build.spec --noconfirm --clean
 if errorlevel 1 (
     echo FEHLER: PyInstaller Build fehlgeschlagen.
     pause
@@ -24,6 +25,7 @@ if errorlevel 1 (
 
 echo.
 echo [3/3] Build abgeschlossen!
-echo Die EXE befindet sich im Ordner: dist\Word-Gliederungs-Retter\
+echo.
+echo Die EXE befindet sich unter: dist\Word-Gliederungs-Retter.exe
 echo.
 pause
