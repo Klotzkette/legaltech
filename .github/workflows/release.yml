@@ -2,18 +2,42 @@ name: Build & Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - 'claude/release-*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (z.B. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 permissions:
   contents: write
 
 jobs:
+  # Versionsname aus Branch oder workflow_dispatch-Input ableiten
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Determine version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            # Branch-Name: claude/release-v1.0.0-<suffix>  →  v1.0.0
+            BRANCH="${{ github.ref_name }}"
+            VERSION=$(echo "$BRANCH" | sed 's|claude/release-||' | cut -d'-' -f1)
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          fi
+
   # ─────────────────────────────────────────────────────────────
   # Windows EXE
   # ─────────────────────────────────────────────────────────────
   build-windows:
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +63,7 @@ jobs:
   # macOS .app
   # ─────────────────────────────────────────────────────────────
   build-macos:
+    needs: prepare
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,12 +91,11 @@ jobs:
           path: dist/Word-Gliederungs-Retter-macOS.zip
 
   # ─────────────────────────────────────────────────────────────
-  # Create GitHub Release (only on tag push)
+  # Create GitHub Release
   # ─────────────────────────────────────────────────────────────
   release:
-    needs: [build-windows, build-macos]
+    needs: [prepare, build-windows, build-macos]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
 
@@ -90,9 +114,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Word-Gliederungs-Retter ${{ github.ref_name }}"
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: "Word-Gliederungs-Retter ${{ needs.prepare.outputs.version }}"
           body: |
-            ## Tom's Super Simple Word-Gliederungs-Retter ${{ github.ref_name }}
+            ## Tom's Super Simple Word-Gliederungs-Retter ${{ needs.prepare.outputs.version }}
 
             Automatische Gliederungsstandardisierung für Word-Dokumente.
             Alle Überschriften werden auf **1. / 1.1 / 1.1.1 …** umgestellt.
@@ -108,7 +133,7 @@ jobs:
             - **Windows:** `.exe` herunterladen und direkt starten (keine Installation nötig).
             - **macOS:** `.zip` entpacken, `.app` in den Programme-Ordner ziehen.
 
-            Optional: OpenAI API-Key in den Einstellungen hinterlegen für KI-gestützte Erkennung (GPT-5.2).
+            Optional: OpenAI API-Key in den Einstellungen hinterlegen für KI-gestützte Erkennung.
           draft: false
           prerelease: false
           files: |
