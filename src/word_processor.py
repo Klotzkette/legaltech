@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from docx import Document
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 
 # ---------------------------------------------------------------------------
@@ -256,8 +256,13 @@ def normalize_levels(headings: Dict[int, int]) -> Dict[int, int]:
 # OOXML numbering helpers  (1. / 1.1 / 1.1.1 … multilevel list)
 # ---------------------------------------------------------------------------
 
-def _build_abstract_num(abstract_num_id: int) -> object:
-    """Build an abstractNum XML element for 1. / 1.1 / 1.1.1 numbering."""
+def _build_abstract_num(abstract_num_id: int, style_ids: Dict[int, str]) -> object:
+    """Build an abstractNum XML element for 1. / 1.1 / 1.1.1 numbering.
+
+    *style_ids* maps heading level (1-9) to the actual Word style ID (e.g. "Heading1").
+    Adding w:pStyle to each level links the multilevel list to the heading styles so
+    Word correctly continues numbering when the user presses Enter.
+    """
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
 
@@ -295,20 +300,64 @@ def _build_abstract_num(abstract_num_id: int) -> object:
 
         for child in [start, num_fmt, lvl_text, lvl_jc, pPr]:
             lvl.append(child)
+
+        # Link this abstract-numbering level to the matching heading style so
+        # Word's outline engine can continue numbering after Enter-key presses.
+        sid = style_ids.get(i + 1)
+        if sid:
+            pStyle_el = OxmlElement("w:pStyle")
+            pStyle_el.set(qn("w:val"), sid)
+            lvl.insert(0, pStyle_el)   # must be first child of w:lvl
+
         abstract_num.append(lvl)
 
     return abstract_num
+
+
+def _ensure_numbering_part(doc: Document):
+    """Return the document's numbering part, creating it from scratch if absent.
+
+    python-docx 1.2.0 declares ``NumberingPart.new()`` but raises
+    ``NotImplementedError``, so we build the minimal XML element ourselves.
+    """
+    try:
+        return doc.part.numbering_part
+    except Exception:
+        pass
+
+    from docx.parts.numbering import NumberingPart
+    from docx.opc.packuri import PackURI
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
+    _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    numbering_element = parse_xml(f'<w:numbering xmlns:w="{_W_NS}"/>'.encode())
+    ct = (
+        "application/vnd.openxmlformats-officedocument"
+        ".wordprocessingml.numbering+xml"
+    )
+    numbering_part = NumberingPart(
+        PackURI("/word/numbering.xml"), ct, numbering_element, None
+    )
+    doc.part.relate_to(numbering_part, RT.NUMBERING)
+    return numbering_part
 
 
 def setup_numbering(doc: Document) -> int:
     """
     Add a 1. / 1.1 / 1.1.1 multilevel numbering to the document.
 
-    Returns the numId to be referenced by heading styles.
+    Returns the numId to be referenced by heading paragraphs.
     """
-    # numbering_part is auto-created by python-docx if missing
-    np = doc.part.numbering_part
+    np = _ensure_numbering_part(doc)
     num_el = np._element
+
+    # Collect actual style IDs for the Heading 1-9 styles present in this doc
+    style_ids: Dict[int, str] = {}
+    for lvl in range(1, 10):
+        try:
+            style_ids[lvl] = doc.styles[f"Heading {lvl}"].style_id
+        except KeyError:
+            pass
 
     # Find next available IDs
     abstract_nums = num_el.findall(qn("w:abstractNum"))
@@ -326,7 +375,7 @@ def setup_numbering(doc: Document) -> int:
     new_num_id = max_num + 1
 
     # Insert abstractNum before the first <w:num> (schema requirement)
-    abstract_num = _build_abstract_num(new_abs_id)
+    abstract_num = _build_abstract_num(new_abs_id, style_ids)
     if nums:
         nums[0].addprevious(abstract_num)
     else:
@@ -393,6 +442,7 @@ def apply_heading_styles(
     track_changes: bool = False,
     strip_numbers: bool = True,
     author: str = "Word-Gliederungs-Retter",
+    num_id: Optional[int] = None,
 ) -> None:
     """
     Apply Heading 1-9 styles to the identified heading paragraphs.
@@ -403,6 +453,11 @@ def apply_heading_styles(
 
     If *strip_numbers* is True, manual numbering prefixes are removed from
     the heading text because Word will add automatic numbering.
+
+    If *num_id* is given, a ``<w:numPr>`` element is written directly into
+    each heading paragraph's own ``<w:pPr>``.  This makes the automatic
+    numbering visible in every Word / LibreOffice version regardless of
+    whether they honour style-level numPr inheritance.
     """
     date_str = (
         datetime.datetime.now(datetime.timezone.utc)
@@ -481,6 +536,24 @@ def apply_heading_styles(
             stripped = strip_manual_numbering(text)
             if stripped and stripped != text:
                 _set_paragraph_text(para, stripped)
+
+        # Write numPr directly into the paragraph so the automatic multilevel
+        # numbering works even in applications that ignore style-level numPr.
+        if num_id is not None:
+            para_pPr = para._p.find(qn("w:pPr"))
+            if para_pPr is None:
+                para_pPr = OxmlElement("w:pPr")
+                para._p.insert(0, para_pPr)
+            for existing in para_pPr.findall(qn("w:numPr")):
+                para_pPr.remove(existing)
+            numPr = OxmlElement("w:numPr")
+            ilvl_el = OxmlElement("w:ilvl")
+            ilvl_el.set(qn("w:val"), str(level - 1))
+            numId_el = OxmlElement("w:numId")
+            numId_el.set(qn("w:val"), str(num_id))
+            numPr.append(ilvl_el)
+            numPr.append(numId_el)
+            para_pPr.insert(0, numPr)
 
 
 # ---------------------------------------------------------------------------
@@ -575,13 +648,14 @@ def process_document(
 
     headings = normalize_levels(headings)
 
-    # ── Step 3: Apply heading styles ───────────────────────────────────────
-    progress("Schritt 3/4 – Gliederung standardisieren …")
-    apply_heading_styles(doc, headings, track_changes=track_changes)
-
-    # ── Step 4: Set up multilevel numbering ────────────────────────────────
-    progress("Schritt 4/4 – Nummerierung einrichten …")
+    # ── Step 3: Set up multilevel numbering (must run before style application
+    #            so the num_id can be embedded into each heading paragraph) ──
+    progress("Schritt 3/4 – Nummerierung einrichten …")
     num_id = setup_numbering(doc)
     link_styles_to_numbering(doc, num_id)
+
+    # ── Step 4: Apply heading styles + embed numPr into each paragraph ──────
+    progress("Schritt 4/4 – Gliederung standardisieren …")
+    apply_heading_styles(doc, headings, track_changes=track_changes, num_id=num_id)
 
     doc.save(output_path)

@@ -575,8 +575,8 @@ class ProcessWorker(QThread):
             step_values = {
                 "Schritt 1/4 – Datei vorbereiten …":        10,
                 "Schritt 2/4 – Überschriften analysieren …": 35,
-                "Schritt 3/4 – Gliederung standardisieren …": 70,
-                "Schritt 4/4 – Nummerierung einrichten …":   90,
+                "Schritt 3/4 – Nummerierung einrichten …":   65,
+                "Schritt 4/4 – Gliederung standardisieren …": 85,
             }
 
             def on_progress(msg: str):

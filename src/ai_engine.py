@@ -9,7 +9,7 @@ import json
 import re
 from typing import Dict, List, Optional
 
-MODEL = "gpt-5.2"
+MODEL = "gpt-4o"
 
 # How many paragraphs to send per AI request
 CHUNK_SIZE = 150
@@ -143,21 +143,27 @@ class AIEngine:
                 progress_callback(int((idx / len(chunks)) * 100))
 
             user_prompt = _build_user_prompt(chunk)
-            client = self._get_client()
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.0,
-                response_format={"type": "json_object"},
-                max_completion_tokens=4096,
-            )
-            content = response.choices[0].message.content
-            if content:
-                chunk_result = _parse_response(content)
-                all_headings.update(chunk_result)
+            try:
+                client = self._get_client()
+                response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                    max_completion_tokens=4096,
+                )
+                content = response.choices[0].message.content
+                if content:
+                    chunk_result = _parse_response(content)
+                    all_headings.update(chunk_result)
+            except Exception as exc:
+                # API failure → silently skip this chunk; heuristic detection
+                # in process_document will supplement any missed headings.
+                import warnings
+                warnings.warn(f"AI chunk {idx} failed ({exc}); falling back to heuristic.")
 
         if progress_callback:
             progress_callback(100)
