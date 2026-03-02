@@ -11,3 +11,4 @@ build/
 *.dmg
 venv/
 .venv/
+releases/
