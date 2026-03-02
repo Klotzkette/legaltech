@@ -552,8 +552,8 @@ class DropZone(QFrame):
 class ProcessWorker(QThread):
     progress = pyqtSignal(int)
     step     = pyqtSignal(str)
-    finished_ok  = pyqtSignal(str)   # output path
-    finished_err = pyqtSignal(str)   # error message
+    finished_ok  = pyqtSignal(str, int)   # output path, heading count
+    finished_err = pyqtSignal(str)        # error message
 
     def __init__(
         self,
@@ -583,7 +583,7 @@ class ProcessWorker(QThread):
                 self.step.emit(msg)
                 self.progress.emit(step_values.get(msg, 50))
 
-            process_document(
+            count = process_document(
                 input_path=self.input_path,
                 output_path=self.output_path,
                 track_changes=self.track_changes,
@@ -591,7 +591,7 @@ class ProcessWorker(QThread):
                 progress_callback=on_progress,
             )
             self.progress.emit(100)
-            self.finished_ok.emit(self.output_path)
+            self.finished_ok.emit(self.output_path, count)
 
         except Exception as e:
             self.finished_err.emit(f"{e}\n\n{traceback.format_exc()}")
@@ -924,12 +924,12 @@ class MainWindow(QMainWindow):
         has_key = bool(load_api_key())
         if has_key:
             self.statusBar().showMessage(
-                "Bereit  \u00b7  Word-Datei ablegen oder ausw\u00e4hlen  \u00b7  v1.0"
+                "Bereit  \u00b7  Word-Datei ablegen oder ausw\u00e4hlen  \u00b7  v1.1"
             )
         else:
             self.statusBar().showMessage(
                 "Offline-Modus (kein API-Key)  \u00b7  "
-                "Erkennung via Stilnamen & Formatierung  \u00b7  v1.0"
+                "Erkennung via Stilnamen & Formatierung  \u00b7  v1.1"
             )
 
     @classmethod
@@ -1046,19 +1046,25 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._cleanup_worker)
         self.worker.start()
 
-    def on_success(self, output_path: str):
+    def on_success(self, output_path: str, heading_count: int):
         self._set_processing(False)
         self._last_output = output_path
         out_name = os.path.basename(output_path)
         mode_label = (
-            "direkt gespeichert" if self._selected_mode == MODE_DIRECT
-            else "mit \u00c4nderungsmodus gespeichert"
+            "direkt" if self._selected_mode == MODE_DIRECT
+            else "mit \u00c4nderungsmodus"
         )
-        detail = f"Gliederung standardisiert \u2013 {mode_label}  \u2192  {out_name}"
+        noun = "\u00dcberschrift" if heading_count == 1 else "\u00dcberschriften"
+        detail = (
+            f"{heading_count} {noun} standardisiert \u2013 {mode_label} gespeichert"
+            f"  \u2192  {out_name}"
+        )
         self.drop_zone.set_state(DropZone.STATE_SUCCESS, detail)
         self.file_label.setText(out_name)
         self.open_folder_btn.setVisible(True)
-        self.statusBar().showMessage(f"Gespeichert: {output_path}")
+        self.statusBar().showMessage(
+            f"{heading_count} {noun} \u2013 Gespeichert: {output_path}"
+        )
         self._open_path(output_path)
         QTimer.singleShot(8000, self._reset_to_idle)
 

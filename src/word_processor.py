@@ -48,26 +48,37 @@ for _i in range(1, 10):
 _ROMAN_RE = r'(?:XIV|XIII|XII|XI|IX|VIII|VII|VI|IV|III|II|X|I|V)'
 
 _TYPE_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    (re.compile(r'^\d+\.\d+\.\d+\.\d+\s+\S'), "DECIMAL_4"),
-    (re.compile(r'^\d+\.\d+\.\d+\s+\S'),       "DECIMAL_3"),
-    (re.compile(r'^\d+\.\d+\s+\S'),             "DECIMAL_2"),
-    (re.compile(r'^\d{1,2}\.\s+\S'),            "DECIMAL_1"),
-    (re.compile(rf'^{_ROMAN_RE}\.\s+\S'),       "ROMAN"),
-    (re.compile(r'^[A-Z]{1,3}\.\s+\S'),         "CAPITAL"),
-    (re.compile(r'^§\s*\d+'),                    "PARAGRAPH"),
-    (re.compile(r'^[a-z]{2}\)\s+\S'),            "LOWER_DOUBLE"),
-    (re.compile(r'^[a-z]\s*[.)]\s+\S'),          "LOWER_SINGLE"),
-    (re.compile(r'^\(\d+\)\s+\S'),               "PAREN_NUM"),
-    (re.compile(r'^\([a-z]\)\s+\S'),             "PAREN_LETTER"),
+    # Decimal multi-level (most specific first)
+    (re.compile(r'^\d+\.\d+\.\d+\.\d+[\s\)]'),  "DECIMAL_4"),
+    (re.compile(r'^\d+\.\d+\.\d+[\s\)]'),         "DECIMAL_3"),
+    (re.compile(r'^\d+\.\d+[\s\)]'),              "DECIMAL_2"),
+    (re.compile(r'^\d{1,2}\.\s+\S'),              "DECIMAL_1"),
+    # Roman & capital-letter
+    (re.compile(rf'^{_ROMAN_RE}\.\s+\S'),          "ROMAN"),
+    (re.compile(r'^[A-Z]{1,3}\.\s+\S'),            "CAPITAL"),
+    # § / Art. / Ziff. – German legal
+    (re.compile(r'^§\s*\d+'),                      "PARAGRAPH"),
+    (re.compile(r'^Art\.?\s*\d+', re.I),           "ARTICLE"),   # Art. 1
+    (re.compile(r'^Ziff?\.?\s*\d+', re.I),         "ZIFFER"),    # Ziff. 1
+    # Structural keywords common in German official documents
+    (re.compile(r'^(?:Teil|Kapitel|Abschnitt|Titel)\s+(?:\d+|[IVX]+)\b', re.I), "CHAPTER"),
+    # Lower-case / parenthesised sub-levels
+    (re.compile(r'^[a-z]{2}\)\s+\S'),              "LOWER_DOUBLE"),
+    (re.compile(r'^[a-z]\s*[.)]\s+\S'),            "LOWER_SINGLE"),
+    (re.compile(r'^\(\d+\)\s+\S'),                 "PAREN_NUM"),
+    (re.compile(r'^\([a-z]\)\s+\S'),               "PAREN_LETTER"),
 ]
 
 # Natural priority of numbering types in German legal documents.
 # Types with the SAME priority are treated as peers (same outline level).
 _TYPE_PRIORITY: Dict[str, int] = {
     "PARAGRAPH":    10,   # § 1, § 2
+    "CHAPTER":      10,   # Teil I, Kapitel 1, Abschnitt 1  (top-level)
     "ROMAN":        20,   # I., II., III.
+    "ARTICLE":      20,   # Art. 1 (same level as Roman in legal docs)
     "CAPITAL":      30,   # A., B., C.
-    "DECIMAL_1":    30,   # 1., 2., 3.  (same depth as CAPITAL)
+    "DECIMAL_1":    30,   # 1., 2., 3.
+    "ZIFFER":       30,   # Ziff. 1
     "DECIMAL_2":    40,   # 1.1, 1.2
     "LOWER_SINGLE": 40,   # a), b)
     "PAREN_NUM":    40,   # (1), (2)
@@ -76,17 +87,21 @@ _TYPE_PRIORITY: Dict[str, int] = {
     "PAREN_LETTER": 50,   # (a), (b)
     "DECIMAL_4":    60,   # 1.1.1.1
     "BOLD_ONLY":    15,   # bold text without numbering
+    "WORD_AUTO":    25,   # Word automatic numbering (numPr)
 }
 
 # Pattern to STRIP the manual prefix from the text (in order of specificity)
 _STRIP_PATTERNS: List[re.Pattern] = [
-    re.compile(r'^\d+\.\d+\.\d+\.\d+\s+'),   # 1.2.3.4
-    re.compile(r'^\d+\.\d+\.\d+\s+'),          # 1.2.3
-    re.compile(r'^\d+\.\d+\s+'),               # 1.2
-    re.compile(r'^\d{1,2}\.\s+'),              # 1.
+    re.compile(r'^\d+\.\d+\.\d+\.\d+[\s\)]+'),   # 1.2.3.4
+    re.compile(r'^\d+\.\d+\.\d+[\s\)]+'),          # 1.2.3
+    re.compile(r'^\d+\.\d+[\s\)]+'),               # 1.2
+    re.compile(r'^\d{1,2}\.\s+'),                  # 1.
     re.compile(rf'^{_ROMAN_RE}\.\s+', re.IGNORECASE),
     re.compile(r'^[A-Z]{1,3}\.\s+'),
     re.compile(r'^§\s*\d+\s*[:\-–]?\s*'),
+    re.compile(r'^Art\.?\s*\d+\s*[:\-–]?\s*', re.I),
+    re.compile(r'^Ziff?\.?\s*\d+\s*[:\-–]?\s*', re.I),
+    re.compile(r'^(?:Teil|Kapitel|Abschnitt|Titel)\s+(?:\d+|[IVX]+)\s*[:\-–]?\s*', re.I),
     re.compile(r'^[a-z]{2}\)\s+'),
     re.compile(r'^[a-z]\s*[.)]\s+'),
     re.compile(r'^\([a-z]\)\s+'),
@@ -109,6 +124,34 @@ def _level_from_style(para) -> Optional[int]:
         level = int(m.group(1))
         return level if 1 <= level <= 9 else None
     return None
+
+
+def _style_font_size_pt(para) -> Optional[float]:
+    """Return the paragraph's effective font size in points, or None."""
+    try:
+        sz = para.style.font.size
+        if sz is not None:
+            return sz.pt
+    except Exception:
+        pass
+    return None
+
+
+def _has_word_auto_numbering(para) -> bool:
+    """Return True if the paragraph has Word automatic numbering (numPr, numId > 0)."""
+    pPr = para._p.find(qn("w:pPr"))
+    if pPr is None:
+        return False
+    numPr_el = pPr.find(qn("w:numPr"))
+    if numPr_el is None:
+        return False
+    numId_el = numPr_el.find(qn("w:numId"))
+    if numId_el is None:
+        return False
+    try:
+        return int(numId_el.get(qn("w:val"), "0")) > 0
+    except ValueError:
+        return False
 
 
 def _detect_numbering_type(text: str) -> Optional[str]:
@@ -153,6 +196,11 @@ def _is_heading_heuristic(para) -> bool:
 
     # ALL-CAPS headings (common in German official documents)
     if len(text) <= 80 and text == text.upper() and any(c.isalpha() for c in text):
+        return True
+
+    # Large-font paragraphs: style font ≥ 14 pt with short text → heading
+    pt = _style_font_size_pt(para)
+    if pt is not None and pt >= 14 and len(text) <= 120:
         return True
 
     return False
@@ -256,7 +304,12 @@ def detect_headings(doc: Document) -> Dict[int, int]:
             type_headings.append((i, num_type))
             continue
 
-        # Third: formatting heuristic (bold, short, no sentence ending)
+        # Third: paragraph with existing Word automatic numbering (numPr)
+        if _has_word_auto_numbering(para) and len(text) <= 200:
+            type_headings.append((i, "WORD_AUTO"))
+            continue
+
+        # Fourth: formatting heuristic (bold, ALL-CAPS, large font, short text)
         if _is_heading_heuristic(para):
             type_headings.append((i, "BOLD_ONLY"))
 
@@ -670,7 +723,7 @@ def process_document(
     track_changes: bool = False,
     ai_engine=None,
     progress_callback=None,
-) -> None:
+) -> int:
     """
     Full pipeline: load → detect headings → apply styles → add numbering → save.
 
@@ -682,6 +735,9 @@ def process_document(
         ai_engine:         Optional AIEngine instance; used when the document
                            does not contain standard heading styles.
         progress_callback: Callable(message: str) for UI status updates.
+
+    Returns:
+        Number of heading paragraphs found and standardised.
     """
 
     def progress(msg: str):
@@ -722,3 +778,4 @@ def process_document(
     apply_heading_styles(doc, headings, track_changes=track_changes, num_id=num_id)
 
     doc.save(output_path)
+    return len(headings)
