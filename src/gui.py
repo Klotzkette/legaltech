@@ -427,7 +427,7 @@ class DropZone(QFrame):
         self.progress_bar.setFixedHeight(20)
         self.progress_bar.setMinimumWidth(320)
         self.progress_bar.setMaximumWidth(400)
-        self.progress_bar.setFormat("%p %")
+        self.progress_bar.setFormat("%p%")
         layout.addWidget(self.progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Idle shadow pulse
@@ -901,6 +901,12 @@ class MainWindow(QMainWindow):
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
+    def _cleanup_worker(self):
+        """Clear worker reference after thread finishes to prevent use-after-free."""
+        if self.worker:
+            self.worker.deleteLater()
+            self.worker = None
+
     def _update_model_pill(self):
         has_key = bool(load_api_key())
         if has_key:
@@ -927,12 +933,13 @@ class MainWindow(QMainWindow):
             )
 
     @classmethod
-    def _output_filename(cls, mode: str) -> str:
+    def _output_filename(cls, mode: str, source_name: str = "") -> str:
         from datetime import date
         cls._file_counter += 1
         today = date.today().strftime("%Y%m%d")
         suffix = "Gliederung" if mode == MODE_DIRECT else "Gliederung_Aenderungsmodus"
-        return f"{today}_Dokument_{suffix}_{cls._file_counter:03d}.docx"
+        stem = Path(source_name).stem if source_name else "Dokument"
+        return f"{today}_{stem}_{suffix}_{cls._file_counter:03d}.docx"
 
     def _set_processing(self, active: bool):
         self.select_btn.setEnabled(not active)
@@ -991,13 +998,16 @@ class MainWindow(QMainWindow):
         mode_dlg = ModeSelectionDialog(self)
         if not mode_dlg.exec():
             self.drop_zone.set_state(DropZone.STATE_IDLE)
+            self.file_label.setText("")
+            self.current_file = None
+            self._update_statusbar_idle()
             return
         mode = mode_dlg.selected_mode
         self._selected_mode = mode
 
         # Output location
         default_dir = load_output_dir() or os.path.dirname(self.current_file)
-        default_name = self._output_filename(mode)
+        default_name = self._output_filename(mode, self.current_file)
         output_path, _ = QFileDialog.getSaveFileName(
             self,
             "Ausgabe speichern unter",
@@ -1006,6 +1016,9 @@ class MainWindow(QMainWindow):
         )
         if not output_path:
             self.drop_zone.set_state(DropZone.STATE_IDLE)
+            self.file_label.setText("")
+            self.current_file = None
+            self._update_statusbar_idle()
             return
         if not output_path.lower().endswith(".docx"):
             output_path += ".docx"
@@ -1030,7 +1043,7 @@ class MainWindow(QMainWindow):
         self.worker.step.connect(lambda s: self.statusBar().showMessage(s))
         self.worker.finished_ok.connect(self.on_success)
         self.worker.finished_err.connect(self.on_error)
-        self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.finished.connect(self._cleanup_worker)
         self.worker.start()
 
     def on_success(self, output_path: str):
@@ -1061,7 +1074,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(500, self._reset_to_idle)
 
     def _reset_to_idle(self):
-        if self.worker and self.worker.isRunning():
+        if self.worker is not None and self.worker.isRunning():
             return
         if self.drop_zone._state in (DropZone.STATE_SUCCESS, DropZone.STATE_ERROR):
             self.drop_zone.set_state(DropZone.STATE_IDLE)

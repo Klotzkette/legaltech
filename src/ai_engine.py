@@ -154,8 +154,10 @@ class AIEngine:
                 response_format={"type": "json_object"},
                 max_completion_tokens=4096,
             )
-            chunk_result = _parse_response(response.choices[0].message.content)
-            all_headings.update(chunk_result)
+            content = response.choices[0].message.content
+            if content:
+                chunk_result = _parse_response(content)
+                all_headings.update(chunk_result)
 
         if progress_callback:
             progress_callback(100)
