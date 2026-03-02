@@ -121,23 +121,41 @@ def _detect_numbering_type(text: str) -> Optional[str]:
 
 def _is_heading_heuristic(para) -> bool:
     """
-    Return True if the paragraph LOOKS like a heading (bold, short, no
-    full-sentence ending) even without a heading style or number prefix.
+    Return True if the paragraph LOOKS like a heading (bold or ALL-CAPS,
+    short, no full-sentence ending) without a heading style or number prefix.
     """
     text = para.text.strip()
     if not text or len(text) > 120:
         return False
-    # All non-empty runs must be bold (entire paragraph is bold)
-    non_empty_runs = [r for r in para.runs if r.text.strip()]
-    if not non_empty_runs or not all(r.bold for r in non_empty_runs):
-        return False
-    # Not ending like a normal sentence (long text ending with period)
-    if text.endswith(".") and len(text) > 60:
-        return False
-    # Not a list bullet
     if text.startswith(("•", "–", "-", "*")):
         return False
-    return True
+    if text.endswith(".") and len(text) > 60:
+        return False
+
+    # Determine whether bold is set at the *style* level (r.bold == None means
+    # "inherit from style", so we must check the paragraph style too).
+    style_bold = False
+    try:
+        style_bold = para.style.font.bold is True
+    except Exception:
+        pass
+
+    def run_is_bold(r) -> bool:
+        if r.bold is True:
+            return True
+        if r.bold is False:
+            return False
+        return style_bold  # None → inherit from style
+
+    non_empty_runs = [r for r in para.runs if r.text.strip()]
+    if non_empty_runs and all(run_is_bold(r) for r in non_empty_runs):
+        return True
+
+    # ALL-CAPS headings (common in German official documents)
+    if len(text) <= 80 and text == text.upper() and any(c.isalpha() for c in text):
+        return True
+
+    return False
 
 
 def _context_aware_levels(
@@ -180,11 +198,24 @@ def _context_aware_levels(
 
 def strip_manual_numbering(text: str) -> str:
     """Remove a manual numbering prefix from a heading text."""
+    stripped, _ = _split_prefix(text)
+    return stripped
+
+
+def _split_prefix(text: str) -> Tuple[str, str]:
+    """Return (stripped_body, deleted_prefix) for a heading text.
+
+    ``stripped_body`` is the heading content without the numbering prefix.
+    ``deleted_prefix`` is the part that was removed (e.g. "I. " or "1.1 ").
+    If no prefix is found both are (text, "").
+    """
     for pattern in _STRIP_PATTERNS:
         m = pattern.match(text)
         if m:
-            return text[m.end():].strip()
-    return text
+            body = text[m.end():].lstrip()
+            prefix = text[: len(text) - len(body)]
+            return body, prefix
+    return text, ""
 
 
 # ---------------------------------------------------------------------------
@@ -298,16 +329,16 @@ def _build_abstract_num(abstract_num_id: int, style_ids: Dict[int, str]) -> obje
         ind.set(qn("w:hanging"), "360")
         pPr.append(ind)
 
-        for child in [start, num_fmt, lvl_text, lvl_jc, pPr]:
-            lvl.append(child)
-
-        # Link this abstract-numbering level to the matching heading style so
-        # Word's outline engine can continue numbering after Enter-key presses.
+        # OOXML CT_Lvl schema order: start, numFmt, [pStyle], lvlText, lvlJc, pPr
         sid = style_ids.get(i + 1)
+        ordered = [start, num_fmt]
         if sid:
             pStyle_el = OxmlElement("w:pStyle")
             pStyle_el.set(qn("w:val"), sid)
-            lvl.insert(0, pStyle_el)   # must be first child of w:lvl
+            ordered.append(pStyle_el)
+        ordered += [lvl_text, lvl_jc, pPr]
+        for child in ordered:
+            lvl.append(child)
 
         abstract_num.append(lvl)
 
@@ -530,15 +561,42 @@ def apply_heading_styles(
                 # ── Direct change via python-docx API ──
                 para.style = target_style
 
-        # Strip manual numbering prefix from heading text
+        # ── Strip (or track-delete) manual numbering prefix ────────────────
         if strip_numbers:
-            text = para.text
-            stripped = strip_manual_numbering(text)
-            if stripped and stripped != text:
-                _set_paragraph_text(para, stripped)
+            raw_text = para.text
+            body, prefix = _split_prefix(raw_text)
+            if prefix and body:
+                if track_changes:
+                    # Mark deleted prefix as w:del so Word shows it struck-out.
+                    # Clone the rPr of the first run so formatting is preserved.
+                    del_el = OxmlElement("w:del")
+                    del_el.set(qn("w:id"), str(change_id))
+                    del_el.set(qn("w:author"), author)
+                    del_el.set(qn("w:date"), date_str)
+                    del_run = OxmlElement("w:r")
+                    first_run_el = para._p.find(qn("w:r"))
+                    if first_run_el is not None:
+                        existing_rPr = first_run_el.find(qn("w:rPr"))
+                        if existing_rPr is not None:
+                            del_run.append(copy.deepcopy(existing_rPr))
+                    del_text = OxmlElement("w:delText")
+                    del_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                    del_text.text = prefix
+                    del_run.append(del_text)
+                    del_el.append(del_run)
+                    # Insert w:del before the first w:r in the paragraph
+                    if first_run_el is not None:
+                        first_run_el.addprevious(del_el)
+                    # Update the first run's text to just the body
+                    _set_paragraph_text(para, body)
+                    change_id += 1
+                else:
+                    _set_paragraph_text(para, body)
 
-        # Write numPr directly into the paragraph so the automatic multilevel
-        # numbering works even in applications that ignore style-level numPr.
+        # ── Write numPr into the paragraph pPr ─────────────────────────────
+        # OOXML schema order inside <w:pPr>: pStyle first, numPr second.
+        # Insert numPr directly after <w:pStyle> (if present) so that Word
+        # and LibreOffice honour it regardless of style-level numPr.
         if num_id is not None:
             para_pPr = para._p.find(qn("w:pPr"))
             if para_pPr is None:
@@ -553,7 +611,12 @@ def apply_heading_styles(
             numId_el.set(qn("w:val"), str(num_id))
             numPr.append(ilvl_el)
             numPr.append(numId_el)
-            para_pPr.insert(0, numPr)
+            # Place numPr AFTER pStyle (schema requirement)
+            pStyle_in_pPr = para_pPr.find(qn("w:pStyle"))
+            if pStyle_in_pPr is not None:
+                pStyle_in_pPr.addnext(numPr)
+            else:
+                para_pPr.insert(0, numPr)
 
 
 # ---------------------------------------------------------------------------
