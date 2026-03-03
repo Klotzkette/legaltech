@@ -370,7 +370,7 @@ _ACCEPTED_EXT = tuple(SUPPORTED_EXTENSIONS)
 
 
 class DropZone(QFrame):
-    """Drag-and-drop zone accepting .doc and .docx files."""
+    """Drag-and-drop zone accepting .doc, .docx, .rtf and .txt files."""
 
     file_dropped = pyqtSignal(str)
     clicked = pyqtSignal()
@@ -449,8 +449,8 @@ class DropZone(QFrame):
 
         if state == self.STATE_IDLE:
             self.icon_label.setText("\u2B06")
-            self.primary_label.setText("Word-Dokument hier ablegen")
-            self.secondary_label.setText("DOC oder DOCX \u2013 oder klicken zum Ausw\u00e4hlen")
+            self.primary_label.setText("Dokument hier ablegen")
+            self.secondary_label.setText("DOC, DOCX, RTF oder TXT \u2013 oder klicken zum Ausw\u00e4hlen")
             self.secondary_label.setVisible(True)
             self.step_label.setVisible(False)
             self.progress_bar.setVisible(False)
@@ -858,8 +858,8 @@ class MainWindow(QMainWindow):
 
         # Subtitle
         subtitle = QLabel(
-            "Automatische Gliederungsstandardisierung f\u00fcr Word-Dokumente  \u00b7  "
-            "DOC und DOCX  \u00b7  1. / 1.1 / 1.1.1 \u2026 mit automatischer Fortsetzung"
+            "Automatische Gliederungsstandardisierung  \u00b7  "
+            "DOC, DOCX, RTF, TXT  \u2192  immer DOCX  \u00b7  1. / 1.1 / 1.1.1 \u2026"
         )
         subtitle.setObjectName("subtitleLabel")
         subtitle.setWordWrap(True)
@@ -973,9 +973,9 @@ class MainWindow(QMainWindow):
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Word-Datei ausw\u00e4hlen",
+            "Dokument ausw\u00e4hlen",
             "",
-            "Word-Dokumente (*.docx *.doc);;Alle Dateien (*)",
+            "Unterst\u00fctzte Dokumente (*.docx *.doc *.rtf *.txt);;Word-Dokumente (*.docx *.doc);;RTF-Dokumente (*.rtf);;Textdateien (*.txt);;Alle Dateien (*)",
         )
         if path:
             self.on_file_selected(path)

@@ -24,7 +24,7 @@ from docx.oxml.ns import qn
 # Accepted file extensions
 # ---------------------------------------------------------------------------
 
-SUPPORTED_EXTENSIONS = {".doc", ".docx"}
+SUPPORTED_EXTENSIONS = {".doc", ".docx", ".rtf", ".txt"}
 
 # ---------------------------------------------------------------------------
 # Heading style name → level mapping  (English + German)
@@ -817,6 +817,27 @@ def convert_doc_to_docx(doc_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# .txt → python-docx Document  (plain-text import)
+# ---------------------------------------------------------------------------
+
+def _load_txt_as_document(txt_path: str) -> "Document":
+    """Read a plain-text file and return a python-docx Document.
+
+    Each non-empty line becomes a paragraph.  Empty lines are preserved as
+    blank paragraphs so the visual spacing is maintained.
+    """
+    with open(txt_path, "r", encoding="utf-8", errors="replace") as fh:
+        lines = fh.read().splitlines()
+    doc = Document()
+    # Remove the default empty paragraph that python-docx inserts
+    for p in list(doc.paragraphs):
+        p._element.getparent().remove(p._element)
+    for line in lines:
+        doc.add_paragraph(line)
+    return doc
+
+
+# ---------------------------------------------------------------------------
 # Main processing function
 # ---------------------------------------------------------------------------
 
@@ -850,31 +871,39 @@ def process_document(
     # ── Step 1: Prepare input ──────────────────────────────────────────────
     progress("Schritt 1/4 – Datei vorbereiten …")
     path = input_path
-    if path.lower().endswith(".doc") and not path.lower().endswith(".docx"):
+    ext = Path(path).suffix.lower()
+
+    # .rtf and legacy .doc → convert to .docx via LibreOffice first
+    if ext in (".doc", ".rtf"):
         path = convert_doc_to_docx(path)
+        ext = ".docx"
 
     # ── Step 2: Load document and detect headings ──────────────────────────
     progress("Schritt 2/4 – Überschriften analysieren …")
-    try:
-        doc = Document(path)
-    except Exception as open_err:
-        # The file has a .docx extension but is not a valid OOXML ZIP package.
-        # This happens with old .doc binary files that were renamed to .docx,
-        # or with files downloaded from SharePoint / OneDrive in legacy format.
-        # Try LibreOffice conversion as a fallback.
+
+    if ext == ".txt":
+        doc = _load_txt_as_document(path)
+    else:
         try:
-            converted = convert_doc_to_docx(path)
-            doc = Document(converted)
-        except Exception:
-            raise RuntimeError(
-                f"Die Datei konnte nicht geöffnet werden: {open_err}\n\n"
-                "Mögliche Ursachen:\n"
-                "  • Die .docx-Datei ist im alten .doc-Format gespeichert\n"
-                "  • Die Datei ist passwortgeschützt\n"
-                "  • Die Datei ist beschädigt\n"
-                "  • Die Datei ist noch in Word geöffnet (Sperre)\n\n"
-                "Lösung: Datei in Word öffnen und als .docx neu speichern."
-            ) from open_err
+            doc = Document(path)
+        except Exception as open_err:
+            # The file has a .docx extension but is not a valid OOXML ZIP package.
+            # This happens with old .doc binary files that were renamed to .docx,
+            # or with files downloaded from SharePoint / OneDrive in legacy format.
+            # Try LibreOffice conversion as a fallback.
+            try:
+                converted = convert_doc_to_docx(path)
+                doc = Document(converted)
+            except Exception:
+                raise RuntimeError(
+                    f"Die Datei konnte nicht geöffnet werden: {open_err}\n\n"
+                    "Mögliche Ursachen:\n"
+                    "  • Die .docx-Datei ist im alten .doc-Format gespeichert\n"
+                    "  • Die Datei ist passwortgeschützt\n"
+                    "  • Die Datei ist beschädigt\n"
+                    "  • Die Datei ist noch in Word geöffnet (Sperre)\n\n"
+                    "Lösung: Datei in Word öffnen und als .docx neu speichern."
+                ) from open_err
 
     # Use AI if available; otherwise fall back to heuristic detection
     if ai_engine and ai_engine.api_key:
