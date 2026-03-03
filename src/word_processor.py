@@ -855,7 +855,26 @@ def process_document(
 
     # ── Step 2: Load document and detect headings ──────────────────────────
     progress("Schritt 2/4 – Überschriften analysieren …")
-    doc = Document(path)
+    try:
+        doc = Document(path)
+    except Exception as open_err:
+        # The file has a .docx extension but is not a valid OOXML ZIP package.
+        # This happens with old .doc binary files that were renamed to .docx,
+        # or with files downloaded from SharePoint / OneDrive in legacy format.
+        # Try LibreOffice conversion as a fallback.
+        try:
+            converted = convert_doc_to_docx(path)
+            doc = Document(converted)
+        except Exception:
+            raise RuntimeError(
+                f"Die Datei konnte nicht geöffnet werden: {open_err}\n\n"
+                "Mögliche Ursachen:\n"
+                "  • Die .docx-Datei ist im alten .doc-Format gespeichert\n"
+                "  • Die Datei ist passwortgeschützt\n"
+                "  • Die Datei ist beschädigt\n"
+                "  • Die Datei ist noch in Word geöffnet (Sperre)\n\n"
+                "Lösung: Datei in Word öffnen und als .docx neu speichern."
+            ) from open_err
 
     # Use AI if available; otherwise fall back to heuristic detection
     if ai_engine and ai_engine.api_key:
