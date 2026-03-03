@@ -62,11 +62,8 @@ _TYPE_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r'^Ziff?\.?\s*\d+', re.I),         "ZIFFER"),    # Ziff. 1
     # Structural keywords common in German official documents
     (re.compile(r'^(?:Teil|Kapitel|Abschnitt|Titel)\s+(?:\d+|[IVX]+)\b', re.I), "CHAPTER"),
-    # Lower-case / parenthesised sub-levels
-    (re.compile(r'^[a-z]{2}\)\s+\S'),              "LOWER_DOUBLE"),
-    (re.compile(r'^[a-z]\s*[.)]\s+\S'),            "LOWER_SINGLE"),
-    (re.compile(r'^\(\d+\)\s+\S'),                 "PAREN_NUM"),
-    (re.compile(r'^\([a-z]\)\s+\S'),               "PAREN_LETTER"),
+    # Note: (1)/(a)/a)/aa) patterns are intentionally absent – in German legal
+    # documents those are numbered body-text paragraphs, NOT headings.
 ]
 
 # Natural priority of numbering types in German legal documents.
@@ -77,14 +74,10 @@ _TYPE_PRIORITY: Dict[str, int] = {
     "ROMAN":        20,   # I., II., III.
     "ARTICLE":      20,   # Art. 1 (same level as Roman in legal docs)
     "CAPITAL":      30,   # A., B., C.
-    "DECIMAL_1":    30,   # 1., 2., 3.
-    "ZIFFER":       30,   # Ziff. 1
+    "ZIFFER":       35,   # Ziff. 1  (slightly below CAPITAL)
+    "DECIMAL_1":    35,   # 1., 2., 3.  (slightly below CAPITAL)
     "DECIMAL_2":    40,   # 1.1, 1.2
-    "LOWER_SINGLE": 40,   # a), b)
-    "PAREN_NUM":    40,   # (1), (2)
     "DECIMAL_3":    50,   # 1.1.1
-    "LOWER_DOUBLE": 50,   # aa), bb)
-    "PAREN_LETTER": 50,   # (a), (b)
     "DECIMAL_4":    60,   # 1.1.1.1
     "BOLD_ONLY":    15,   # bold text without numbering
     "WORD_AUTO":    25,   # Word automatic numbering (numPr)
@@ -102,10 +95,6 @@ _STRIP_PATTERNS: List[re.Pattern] = [
     re.compile(r'^Art\.?\s*\d+\s*[:\-–]?\s*', re.I),
     re.compile(r'^Ziff?\.?\s*\d+\s*[:\-–]?\s*', re.I),
     re.compile(r'^(?:Teil|Kapitel|Abschnitt|Titel)\s+(?:\d+|[IVX]+)\s*[:\-–]?\s*', re.I),
-    re.compile(r'^[a-z]{2}\)\s+'),
-    re.compile(r'^[a-z]\s*[.)]\s+'),
-    re.compile(r'^\([a-z]\)\s+'),
-    re.compile(r'^\(\d+\)\s+'),
 ]
 
 
@@ -221,21 +210,47 @@ def _context_aware_levels(
     if not heading_info:
         return {}
 
-    # Collect unique types actually present, in their priority order
-    present_types = []
-    for _, ntype in heading_info:
+    # Collect unique types in first-appearance order.
+    present_types: List[str] = []
+    first_para_idx: Dict[str, int] = {}
+    for para_idx, ntype in heading_info:
         if ntype not in present_types:
             present_types.append(ntype)
+            first_para_idx[ntype] = para_idx
 
-    # Sort by natural priority
-    present_types.sort(key=lambda t: _TYPE_PRIORITY.get(t, 99))
+    # Start with global type priorities, then adjust for late-appearing types.
+    # If a type T has a higher global priority (lower priority number) BUT
+    # first appears in the document AFTER ≥3 occurrences of lower-priority
+    # types, it likely isn't the top-level structure – demote it to be a peer
+    # of the types that dominate the beginning of the document.
+    # Example: Roman numerals run through most of the document; a single §
+    # sign appears at the end → § should be a peer of the Roman numerals,
+    # not the "super-level" that demotes everything else to 1.1 / 1.1.1.
+    adjusted_prio: Dict[str, int] = {t: _TYPE_PRIORITY.get(t, 99)
+                                      for t in present_types}
 
-    # Group types that share the same priority into the same level
+    for t in present_types:
+        prio = adjusted_prio[t]
+        first = first_para_idx[t]
+        count_before = sum(
+            1 for pi, nt in heading_info
+            if nt != t and pi < first and _TYPE_PRIORITY.get(nt, 99) > prio
+        )
+        if count_before >= 3:
+            # Demote this late-arriving high-priority type: make it a peer of
+            # whatever type first appeared in the document.
+            first_type = present_types[0]
+            adjusted_prio[t] = adjusted_prio[first_type]
+
+    # Sort by (adjusted_priority, first_occurrence_index)
+    present_types.sort(key=lambda t: (adjusted_prio[t], first_para_idx[t]))
+
+    # Assign levels using ADJUSTED priorities so peers share the same level
     type_to_level: Dict[str, int] = {}
     current_level = 0
     last_priority = -1
     for t in present_types:
-        p = _TYPE_PRIORITY.get(t, 99)
+        p = adjusted_prio[t]          # ← adjusted, not original
         if p != last_priority:
             current_level += 1
             last_priority = p
@@ -298,11 +313,30 @@ def detect_headings(doc: Document) -> Dict[int, int]:
             style_headings[i] = style_level
             continue
 
-        # Second: detect numbering type from text
-        num_type = _detect_numbering_type(text)
-        if num_type is not None:
-            type_headings.append((i, num_type))
-            continue
+        # Second: detect numbering type from text.
+        # Only consider short paragraphs – body-text can also start with "1."
+        # but tends to be longer.  Also reject numbered full sentences: if the
+        # body (after stripping the prefix) ends with a period and is longer
+        # than 25 characters, it is a list item / body paragraph, not a heading.
+        if len(text) <= 120:
+            num_type = _detect_numbering_type(text)
+            if num_type is not None:
+                body_check, _ = _split_prefix(text)
+                # If the body (after stripping the prefix) ends with a period
+                # AND has 3+ words, it is a numbered body-text sentence, not
+                # a heading title.  Heading titles are typically noun phrases
+                # of 1-2 words without a trailing full stop.
+                body_core = body_check.rstrip(".")
+                is_sentence = (
+                    body_check.endswith(".")
+                    and len(body_check) > 15
+                    and len(body_core.split()) >= 3
+                )
+                if is_sentence:
+                    pass  # Numbered sentence → body text, not a heading
+                else:
+                    type_headings.append((i, num_type))
+                    continue
 
         # Third: paragraph with existing Word automatic numbering (numPr)
         if _has_word_auto_numbering(para) and len(text) <= 200:
@@ -351,6 +385,12 @@ def compute_number_strings(headings: Dict[int, int]) -> Dict[int, str]:
     result: Dict[int, str] = {}
     for idx in sorted(headings.keys()):
         level = headings[idx]
+        # If parent levels have never been seen, start them at 1 so the first
+        # level-2 heading gets "1.1" (not "0.1") and the first level-3 heading
+        # gets "1.1.1" (not "0.0.1").
+        for parent in range(level - 1):
+            if counters[parent] == 0:
+                counters[parent] = 1
         counters[level - 1] += 1
         for deeper in range(level, 10):
             counters[deeper] = 0
@@ -533,6 +573,47 @@ def link_styles_to_numbering(doc: Document, num_id: int) -> None:
 # Apply heading styles (with optional Track Changes recording)
 # ---------------------------------------------------------------------------
 
+def _freeze_run_formatting(para) -> None:
+    """Write explicit run-level formatting so a paragraph-style change does
+    not alter the visual appearance (font, size, bold, italic, colour).
+
+    When python-docx changes ``para.style``, runs that have no explicit rPr
+    attributes will pick up the new style's defaults.  By writing the
+    *currently effective* values into each run's rPr we pin the appearance.
+    """
+    try:
+        sty_font = para.style.font
+    except Exception:
+        sty_font = None
+
+    for run in para.runs:
+        f = run.font
+        # Font family
+        if f.name is None and sty_font and sty_font.name:
+            f.name = sty_font.name
+        # Font size
+        if f.size is None and sty_font and sty_font.size:
+            f.size = sty_font.size
+        # Bold
+        if run.bold is None and sty_font:
+            b = sty_font.bold
+            if b is not None:
+                run.bold = b
+        # Italic
+        if run.italic is None and sty_font:
+            it = sty_font.italic
+            if it is not None:
+                run.italic = it
+        # Colour
+        try:
+            from docx.dml.color import ColorFormat as _CF
+            if f.color.type is None and sty_font and sty_font.color.type is not None:
+                if hasattr(sty_font.color, "rgb") and sty_font.color.rgb:
+                    f.color.rgb = sty_font.color.rgb
+        except Exception:
+            pass
+
+
 def _set_paragraph_text(para, new_text: str) -> None:
     """Replace paragraph text while keeping the first run's character format."""
     if not para.runs:
@@ -597,7 +678,10 @@ def apply_heading_styles(
         new_prefix = f"{number_str} " if number_str else ""
         new_text   = new_prefix + body
 
-        # ── 1. Apply Heading style ────────────────────────────────────────
+        # ── 1. Freeze current formatting so style change doesn't alter looks ─
+        _freeze_run_formatting(para)
+
+        # ── 2. Apply Heading style ────────────────────────────────────────
         current_style_id = None
         pPr = para._p.find(qn("w:pPr"))
         if pPr is not None:
@@ -630,7 +714,7 @@ def apply_heading_styles(
         elif not style_already_correct:
             para.style = target_style
 
-        # ── 2. Rewrite paragraph text with the new number prefix ──────────
+        # ── 3. Rewrite paragraph text with the new number prefix ──────────
         if raw_text == new_text:
             continue  # already correct (e.g. already "1. Heading")
 
@@ -786,16 +870,11 @@ def process_document(
 
     headings = normalize_levels(headings)
 
-    # ── Step 3: Set up multilevel numbering in style definitions ─────────────
-    # This ensures NEW headings created by the user (via Enter) inherit the
-    # 1. / 1.1 numbering automatically.  Existing paragraphs already receive
-    # their numbers as literal text in step 4.
+    # ── Step 3: No automatic OOXML numbering needed ──────────────────────────
+    # Literal numbers are written into the paragraph text in step 4, so no
+    # multilevel-list numPr is attached to styles.  Attaching numPr to styles
+    # AND writing literal text would produce double numbering ("1. 1. Title").
     progress("Schritt 3/4 – Nummerierung einrichten …")
-    try:
-        num_id = setup_numbering(doc)
-        link_styles_to_numbering(doc, num_id)
-    except Exception:
-        pass  # Non-critical: literal text numbers are written regardless
 
     # ── Step 4: Apply heading styles + write literal 1./1.1/1.1.1 numbers ───
     progress("Schritt 4/4 – Gliederung standardisieren …")
