@@ -336,8 +336,31 @@ def normalize_levels(headings: Dict[int, int]) -> Dict[int, int]:
     return {i: remap[lvl] for i, lvl in headings.items()}
 
 
+def compute_number_strings(headings: Dict[int, int]) -> Dict[int, str]:
+    """
+    Compute 1. / 1.1 / 1.1.1 … prefix strings for each heading paragraph.
+
+    Returns {para_idx: number_string}, e.g.::
+
+        {2: "1.", 4: "1.1", 8: "1.1.1", 10: "1.2"}
+
+    Level 1 uses a trailing dot ("1."), deeper levels use dots only as
+    separators ("1.1", "1.1.1") matching the German legal convention.
+    """
+    counters: List[int] = [0] * 10
+    result: Dict[int, str] = {}
+    for idx in sorted(headings.keys()):
+        level = headings[idx]
+        counters[level - 1] += 1
+        for deeper in range(level, 10):
+            counters[deeper] = 0
+        parts = [str(counters[i]) for i in range(level)]
+        result[idx] = ".".join(parts) + ("." if level == 1 else "")
+    return result
+
+
 # ---------------------------------------------------------------------------
-# OOXML numbering helpers  (1. / 1.1 / 1.1.1 … multilevel list)
+# OOXML numbering helpers  (kept for reference; not used in main pipeline)
 # ---------------------------------------------------------------------------
 
 def _build_abstract_num(abstract_num_id: int, style_ids: Dict[int, str]) -> object:
@@ -524,37 +547,34 @@ def apply_heading_styles(
     doc: Document,
     headings: Dict[int, int],
     track_changes: bool = False,
-    strip_numbers: bool = True,
     author: str = "Word-Gliederungs-Retter",
-    num_id: Optional[int] = None,
 ) -> None:
     """
-    Apply Heading 1-9 styles to the identified heading paragraphs.
+    Apply Heading 1-9 styles and write literal 1. / 1.1 / 1.1.1 … numbering
+    directly into each heading paragraph's text.
 
-    If *track_changes* is True, the original paragraph properties are saved
-    as a <w:pPrChange> element so Word displays the style change in revision
-    mode (Track Changes).
+    Writing the number as **visible text** (not as OOXML automatic numbering)
+    guarantees the document looks different when opened in any Word version or
+    viewer.  The Heading styles give the document proper structure so the user
+    can navigate, collapse/expand sections and continue the outline.
 
-    If *strip_numbers* is True, manual numbering prefixes are removed from
-    the heading text because Word will add automatic numbering.
-
-    If *num_id* is given, a ``<w:numPr>`` element is written directly into
-    each heading paragraph's own ``<w:pPr>``.  This makes the automatic
-    numbering visible in every Word / LibreOffice version regardless of
-    whether they honour style-level numPr inheritance.
+    In *track_changes* mode every change is recorded:
+    - Style change    → ``w:pPrChange`` (shown in Word's revision panel)
+    - Old prefix text → ``w:del``       (shown struck-through in red)
+    - New prefix text → ``w:ins``       (shown underlined in red)
     """
+    number_strings = compute_number_strings(headings)
+
     date_str = (
         datetime.datetime.now(datetime.timezone.utc)
         .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 
-    # Find highest existing tracked-change ID to avoid conflicts
-    body = doc.element.body
+    # Find highest existing tracked-change ID to avoid ID conflicts
     existing_ids = [
         int(el.get(qn("w:id")))
-        for el in body.iter()
-        if el.get(qn("w:id")) is not None
-        and el.get(qn("w:id")).isdigit()
+        for el in doc.element.body.iter()
+        if el.get(qn("w:id")) is not None and el.get(qn("w:id")).isdigit()
     ]
     change_id = max(existing_ids, default=0) + 1
 
@@ -565,111 +585,110 @@ def apply_heading_styles(
         try:
             target_style = doc.styles[style_name]
         except KeyError:
-            continue  # Style not found – skip rather than crash
+            continue  # Style not in document – skip
 
-        # Check whether the paragraph already has the target style
+        # ── Compute new text ──────────────────────────────────────────────
+        number_str = number_strings.get(para_idx, "")
+        raw_text   = para.text
+        body, old_prefix = _split_prefix(raw_text)
+        if not body:          # entire text looked like a prefix – keep it all
+            body       = raw_text
+            old_prefix = ""
+        new_prefix = f"{number_str} " if number_str else ""
+        new_text   = new_prefix + body
+
+        # ── 1. Apply Heading style ────────────────────────────────────────
         current_style_id = None
-        current_pPr = para._p.find(qn("w:pPr"))
-        if current_pPr is not None:
-            current_pStyle = current_pPr.find(qn("w:pStyle"))
-            if current_pStyle is not None:
-                current_style_id = current_pStyle.get(qn("w:val"))
-        style_already_correct = current_style_id == target_style.style_id
+        pPr = para._p.find(qn("w:pPr"))
+        if pPr is not None:
+            ps = pPr.find(qn("w:pStyle"))
+            if ps is not None:
+                current_style_id = ps.get(qn("w:val"))
+        style_already_correct = (current_style_id == target_style.style_id)
+
+        if track_changes and not style_already_correct:
+            if pPr is None:
+                pPr = OxmlElement("w:pPr")
+                para._p.insert(0, pPr)
+            orig_pPr = copy.deepcopy(pPr)
+            for ch in orig_pPr.findall(qn("w:pPrChange")):
+                orig_pPr.remove(ch)
+            ps = pPr.find(qn("w:pStyle"))
+            if ps is None:
+                ps = OxmlElement("w:pStyle")
+                pPr.insert(0, ps)
+            ps.set(qn("w:val"), target_style.style_id)
+            for ch in pPr.findall(qn("w:pPrChange")):
+                pPr.remove(ch)
+            pPrChange = OxmlElement("w:pPrChange")
+            pPrChange.set(qn("w:id"), str(change_id))
+            pPrChange.set(qn("w:author"), author)
+            pPrChange.set(qn("w:date"), date_str)
+            pPrChange.append(orig_pPr)
+            pPr.append(pPrChange)
+            change_id += 1
+        elif not style_already_correct:
+            para.style = target_style
+
+        # ── 2. Rewrite paragraph text with the new number prefix ──────────
+        if raw_text == new_text:
+            continue  # already correct (e.g. already "1. Heading")
+
+        first_run_el = para._p.find(qn("w:r"))
+        first_rPr: object = None
+        if first_run_el is not None:
+            first_rPr = first_run_el.find(qn("w:rPr"))
 
         if track_changes:
-            if not style_already_correct:
-                # ── Tracked change: record old pPr, apply new style via XML ──
-                pPr = para._p.find(qn("w:pPr"))
-                if pPr is None:
-                    pPr = OxmlElement("w:pPr")
-                    para._p.insert(0, pPr)
-
-                # Deep-copy the *current* pPr as the "original" state
-                orig_pPr = copy.deepcopy(pPr)
-                # Strip any existing pPrChange from the copy (no nesting allowed)
-                for ch in orig_pPr.findall(qn("w:pPrChange")):
-                    orig_pPr.remove(ch)
-
-                # Update the live pPr with the new style
-                pStyle = pPr.find(qn("w:pStyle"))
-                if pStyle is None:
-                    pStyle = OxmlElement("w:pStyle")
-                    pPr.insert(0, pStyle)
-                pStyle.set(qn("w:val"), target_style.style_id)
-
-                # Remove any stale pPrChange
-                for ch in pPr.findall(qn("w:pPrChange")):
-                    pPr.remove(ch)
-
-                # Append pPrChange containing the original pPr
-                pPrChange = OxmlElement("w:pPrChange")
-                pPrChange.set(qn("w:id"), str(change_id))
-                pPrChange.set(qn("w:author"), author)
-                pPrChange.set(qn("w:date"), date_str)
-                pPrChange.append(orig_pPr)
-                pPr.append(pPrChange)
-                change_id += 1
-        else:
-            if not style_already_correct:
-                # ── Direct change via python-docx API ──
-                para.style = target_style
-
-        # ── Strip (or track-delete) manual numbering prefix ────────────────
-        if strip_numbers:
-            raw_text = para.text
-            body, prefix = _split_prefix(raw_text)
-            if prefix and body:
-                if track_changes:
-                    # Mark deleted prefix as w:del so Word shows it struck-out.
-                    # Clone the rPr of the first run so formatting is preserved.
-                    del_el = OxmlElement("w:del")
-                    del_el.set(qn("w:id"), str(change_id))
-                    del_el.set(qn("w:author"), author)
-                    del_el.set(qn("w:date"), date_str)
-                    del_run = OxmlElement("w:r")
-                    first_run_el = para._p.find(qn("w:r"))
-                    if first_run_el is not None:
-                        existing_rPr = first_run_el.find(qn("w:rPr"))
-                        if existing_rPr is not None:
-                            del_run.append(copy.deepcopy(existing_rPr))
-                    del_text = OxmlElement("w:delText")
-                    del_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-                    del_text.text = prefix
-                    del_run.append(del_text)
-                    del_el.append(del_run)
-                    # Insert w:del before the first w:r in the paragraph
-                    if first_run_el is not None:
-                        first_run_el.addprevious(del_el)
-                    # Update the first run's text to just the body
-                    _set_paragraph_text(para, body)
-                    change_id += 1
+            # w:del  →  struck-through old prefix
+            if old_prefix:
+                del_el = OxmlElement("w:del")
+                del_el.set(qn("w:id"), str(change_id))
+                del_el.set(qn("w:author"), author)
+                del_el.set(qn("w:date"), date_str)
+                del_run = OxmlElement("w:r")
+                if first_rPr is not None:
+                    del_run.append(copy.deepcopy(first_rPr))
+                del_text = OxmlElement("w:delText")
+                del_text.set(
+                    "{http://www.w3.org/XML/1998/namespace}space", "preserve"
+                )
+                del_text.text = old_prefix
+                del_run.append(del_text)
+                del_el.append(del_run)
+                if first_run_el is not None:
+                    first_run_el.addprevious(del_el)
                 else:
-                    _set_paragraph_text(para, body)
+                    para._p.append(del_el)
+                change_id += 1
 
-        # ── Write numPr into the paragraph pPr ─────────────────────────────
-        # OOXML schema order inside <w:pPr>: pStyle first, numPr second.
-        # Insert numPr directly after <w:pStyle> (if present) so that Word
-        # and LibreOffice honour it regardless of style-level numPr.
-        if num_id is not None:
-            para_pPr = para._p.find(qn("w:pPr"))
-            if para_pPr is None:
-                para_pPr = OxmlElement("w:pPr")
-                para._p.insert(0, para_pPr)
-            for existing in para_pPr.findall(qn("w:numPr")):
-                para_pPr.remove(existing)
-            numPr = OxmlElement("w:numPr")
-            ilvl_el = OxmlElement("w:ilvl")
-            ilvl_el.set(qn("w:val"), str(level - 1))
-            numId_el = OxmlElement("w:numId")
-            numId_el.set(qn("w:val"), str(num_id))
-            numPr.append(ilvl_el)
-            numPr.append(numId_el)
-            # Place numPr AFTER pStyle (schema requirement)
-            pStyle_in_pPr = para_pPr.find(qn("w:pStyle"))
-            if pStyle_in_pPr is not None:
-                pStyle_in_pPr.addnext(numPr)
-            else:
-                para_pPr.insert(0, numPr)
+            # w:ins  →  underlined new prefix
+            if new_prefix:
+                ins_el = OxmlElement("w:ins")
+                ins_el.set(qn("w:id"), str(change_id))
+                ins_el.set(qn("w:author"), author)
+                ins_el.set(qn("w:date"), date_str)
+                ins_run = OxmlElement("w:r")
+                if first_rPr is not None:
+                    ins_run.append(copy.deepcopy(first_rPr))
+                ins_text = OxmlElement("w:t")
+                ins_text.set(
+                    "{http://www.w3.org/XML/1998/namespace}space", "preserve"
+                )
+                ins_text.text = new_prefix
+                ins_run.append(ins_text)
+                ins_el.append(ins_run)
+                if first_run_el is not None:
+                    first_run_el.addprevious(ins_el)
+                else:
+                    para._p.append(ins_el)
+                change_id += 1
+
+            # Keep only the body text in the original runs
+            _set_paragraph_text(para, body)
+        else:
+            # Direct mode: just write the complete new text
+            _set_paragraph_text(para, new_text)
 
 
 # ---------------------------------------------------------------------------
@@ -767,15 +786,20 @@ def process_document(
 
     headings = normalize_levels(headings)
 
-    # ── Step 3: Set up multilevel numbering (must run before style application
-    #            so the num_id can be embedded into each heading paragraph) ──
+    # ── Step 3: Set up multilevel numbering in style definitions ─────────────
+    # This ensures NEW headings created by the user (via Enter) inherit the
+    # 1. / 1.1 numbering automatically.  Existing paragraphs already receive
+    # their numbers as literal text in step 4.
     progress("Schritt 3/4 – Nummerierung einrichten …")
-    num_id = setup_numbering(doc)
-    link_styles_to_numbering(doc, num_id)
+    try:
+        num_id = setup_numbering(doc)
+        link_styles_to_numbering(doc, num_id)
+    except Exception:
+        pass  # Non-critical: literal text numbers are written regardless
 
-    # ── Step 4: Apply heading styles + embed numPr into each paragraph ──────
+    # ── Step 4: Apply heading styles + write literal 1./1.1/1.1.1 numbers ───
     progress("Schritt 4/4 – Gliederung standardisieren …")
-    apply_heading_styles(doc, headings, track_changes=track_changes, num_id=num_id)
+    apply_heading_styles(doc, headings, track_changes=track_changes)
 
     doc.save(output_path)
     return len(headings)
