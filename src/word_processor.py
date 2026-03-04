@@ -152,42 +152,53 @@ def _detect_numbering_type(text: str) -> Optional[str]:
 
 
 def _is_heading_heuristic(para) -> bool:
-    """
-    Return True if the paragraph LOOKS like a heading (bold or ALL-CAPS,
-    short, no full-sentence ending) without a heading style or number prefix.
+    """Return True if the paragraph LOOKS like a heading without a numbered
+    prefix or explicit heading style.
+
+    Conservative rules to avoid false positives in German legal documents:
+    - Bold-only: ALL runs bold AND ≤ 80 chars AND ≤ 7 words AND no trailing
+      sentence punctuation AND doesn't start with a list marker or parenthesis.
+    - ALL-CAPS:  ≤ 60 chars, ≤ 5 words, at least one letter.
+    - Large font: style font ≥ 14 pt with ≤ 120 chars.
     """
     text = para.text.strip()
-    if not text or len(text) > 120:
+    if not text:
         return False
-    if text.startswith(("•", "–", "-", "*")):
+    if text.startswith(("•", "–", "-", "*", "(", "[")):
         return False
-    if text.endswith(".") and len(text) > 60:
+    # Sentences (body text) typically end with these characters
+    if re.search(r"[.,;!?]\s*$", text):
         return False
 
-    # Determine whether bold is set at the *style* level (r.bold == None means
-    # "inherit from style", so we must check the paragraph style too).
-    style_bold = False
-    try:
-        style_bold = para.style.font.bold is True
-    except Exception:
-        pass
+    words = text.split()
 
-    def run_is_bold(r) -> bool:
-        if r.bold is True:
+    # ── Bold-only heuristic (most conservative) ──────────────────────────
+    if len(text) <= 80 and len(words) <= 7:
+        # Resolve effective bold: run.bold may be None (inherit from style)
+        style_bold = False
+        try:
+            style_bold = para.style.font.bold is True
+        except Exception:
+            pass
+
+        def _run_is_bold(r) -> bool:
+            if r.bold is True:
+                return True
+            if r.bold is False:
+                return False
+            return style_bold
+
+        non_empty = [r for r in para.runs if r.text.strip()]
+        if non_empty and all(_run_is_bold(r) for r in non_empty):
             return True
-        if r.bold is False:
-            return False
-        return style_bold  # None → inherit from style
 
-    non_empty_runs = [r for r in para.runs if r.text.strip()]
-    if non_empty_runs and all(run_is_bold(r) for r in non_empty_runs):
+    # ── ALL-CAPS heuristic ────────────────────────────────────────────────
+    if len(text) <= 60 and len(words) <= 5 and text == text.upper() and any(
+        c.isalpha() for c in text
+    ):
         return True
 
-    # ALL-CAPS headings (common in German official documents)
-    if len(text) <= 80 and text == text.upper() and any(c.isalpha() for c in text):
-        return True
-
-    # Large-font paragraphs: style font ≥ 14 pt with short text → heading
+    # ── Large-font heuristic ──────────────────────────────────────────────
     pt = _style_font_size_pt(para)
     if pt is not None and pt >= 14 and len(text) <= 120:
         return True
@@ -573,55 +584,264 @@ def link_styles_to_numbering(doc: Document, num_id: int) -> None:
 # Apply heading styles (with optional Track Changes recording)
 # ---------------------------------------------------------------------------
 
-def _freeze_run_formatting(para) -> None:
-    """Write explicit run-level formatting so a paragraph-style change does
-    not alter the visual appearance (font, size, bold, italic, colour).
+# XML namespace shorthand used by the formatting helpers below
+_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
-    When python-docx changes ``para.style``, runs that have no explicit rPr
-    attributes will pick up the new style's defaults.  By writing the
-    *currently effective* values into each run's rPr we pin the appearance.
-    """
+
+def _walk_style_chain(para):
+    """Yield paragraph styles from most-specific (para.style) to root."""
+    sty = para.style
+    seen: set = set()
+    while sty is not None:
+        sid = getattr(sty, "style_id", id(sty))
+        if sid in seen:
+            break
+        seen.add(sid)
+        yield sty
+        sty = getattr(sty, "base_style", None)
+
+
+def _doc_default_font(doc) -> dict:
+    """Return {'name': str|None, 'size': Pt|None} from w:docDefaults."""
+    result: dict = {"name": None, "size": None}
     try:
-        sty_font = para.style.font
+        rPrDef = doc.element.find(f".//{{{_W}}}rPrDefault")
+        if rPrDef is None:
+            return result
+        rPr = rPrDef.find(f"{{{_W}}}rPr")
+        if rPr is None:
+            return result
+        rFonts = rPr.find(f"{{{_W}}}rFonts")
+        if rFonts is not None:
+            result["name"] = (
+                rFonts.get(f"{{{_W}}}ascii") or rFonts.get(f"{{{_W}}}hAnsi")
+            )
+        sz = rPr.find(f"{{{_W}}}sz")
+        if sz is not None:
+            v = sz.get(f"{{{_W}}}val")
+            if v:
+                from docx.shared import Pt as _Pt
+                result["size"] = _Pt(int(v) / 2)
     except Exception:
-        sty_font = None
+        pass
+    return result
 
-    for run in para.runs:
-        f = run.font
-        # Font family
-        if f.name is None and sty_font and sty_font.name:
-            f.name = sty_font.name
-        # Font size
-        if f.size is None and sty_font and sty_font.size:
-            f.size = sty_font.size
-        # Bold
-        if run.bold is None and sty_font:
-            b = sty_font.bold
-            if b is not None:
-                run.bold = b
-        # Italic
-        if run.italic is None and sty_font:
-            it = sty_font.italic
-            if it is not None:
-                run.italic = it
-        # Colour
+
+def _effective_run_props(para, doc) -> dict:
+    """Resolve fully-effective character properties through the style chain.
+
+    Walks the chain root-first (so the most-specific style wins last) and
+    falls back to document-level defaults for font name and size.
+
+    Returns
+    -------
+    dict with keys:
+        bold        bool   (defaults to False)
+        italic      bool   (defaults to False)
+        name        str | None
+        size        Pt object | None
+        color_auto  bool   (True → no explicit colour → emit <w:color val="auto">)
+        color_rgb   RGBColor | None
+    """
+    result: dict = {
+        "bold": False,
+        "italic": False,
+        "name": None,
+        "size": None,
+        "color_auto": True,
+        "color_rgb": None,
+    }
+    # Build chain and reverse so root (least-specific) is processed first;
+    # each style's values overwrite the previous → most-specific wins at the end.
+    chain = list(_walk_style_chain(para))
+    for sty in reversed(chain):
         try:
-            from docx.dml.color import ColorFormat as _CF
-            if f.color.type is None and sty_font and sty_font.color.type is not None:
-                if hasattr(sty_font.color, "rgb") and sty_font.color.rgb:
-                    f.color.rgb = sty_font.color.rgb
+            f = sty.font
+            if f.bold is not None:
+                result["bold"] = f.bold
+            if f.italic is not None:
+                result["italic"] = f.italic
+            if f.name is not None:
+                result["name"] = f.name
+            if f.size is not None:
+                result["size"] = f.size
+            try:
+                if f.color.type is not None:
+                    result["color_auto"] = False
+                    result["color_rgb"] = getattr(f.color, "rgb", None)
+            except Exception:
+                pass
         except Exception:
             pass
+    # Fill name / size from document defaults when still unresolved
+    if result["name"] is None or result["size"] is None:
+        dd = _doc_default_font(doc)
+        if result["name"] is None:
+            result["name"] = dd["name"]
+        if result["size"] is None:
+            result["size"] = dd["size"]
+    return result
 
 
-def _set_paragraph_text(para, new_text: str) -> None:
-    """Replace paragraph text while keeping the first run's character format."""
+def _freeze_para_properties(para) -> None:
+    """Write explicit paragraph-level spacing/indent so heading-style
+    defaults cannot override them after the style change.
+
+    Only acts when no explicit value is already present on the paragraph;
+    copies the current effective value from the style chain, or writes a
+    safe zero/default so the heading style's values are blocked.
+    """
+    chain = list(_walk_style_chain(para))   # most-specific first
+    pPr = para._p.find(qn("w:pPr"))
+    if pPr is None:
+        pPr = OxmlElement("w:pPr")
+        para._p.insert(0, pPr)
+
+    for tag in ("w:ind", "w:spacing", "w:jc"):
+        if pPr.find(qn(tag)) is not None:
+            continue  # already explicit on paragraph → survives style change
+
+        # Find the most-specific effective value in the style chain
+        eff_el = None
+        for sty in chain:
+            try:
+                sty_pPr = sty.element.find(qn("w:pPr"))
+                if sty_pPr is not None:
+                    child = sty_pPr.find(qn(tag))
+                    if child is not None:
+                        eff_el = copy.deepcopy(child)
+                        break
+            except Exception:
+                pass
+
+        if eff_el is not None:
+            # The style chain already defines a value; write it explicitly.
+            # For spacing, also ensure both before AND after attributes are
+            # present so a partial element can't be augmented by the heading.
+            if tag == "w:spacing":
+                if eff_el.get(qn("w:before")) is None:
+                    eff_el.set(qn("w:before"), "0")
+                if eff_el.get(qn("w:after")) is None:
+                    eff_el.set(qn("w:after"), "0")
+            pPr.append(eff_el)
+        elif tag == "w:ind":
+            # No indent in style chain → write zero to block heading indent
+            ind = OxmlElement("w:ind")
+            ind.set(qn("w:left"), "0")
+            ind.set(qn("w:hanging"), "0")
+            pPr.append(ind)
+        elif tag == "w:spacing":
+            # No spacing in style chain → block heading's space-before
+            sp = OxmlElement("w:spacing")
+            sp.set(qn("w:before"), "0")
+            sp.set(qn("w:after"), "0")
+            pPr.append(sp)
+        # w:jc (justification): leave absent if not in chain – justified/left
+        # body text is usually left-aligned and headings are too, so no change.
+
+
+def _freeze_run_formatting(para, doc) -> None:
+    """Pin fully-resolved character formatting explicitly onto every run.
+
+    Must be called BEFORE changing ``para.style``.  Resolves the complete
+    style inheritance chain (including document defaults) so that the
+    subsequent style change cannot alter the visual appearance.
+
+    Properties frozen: bold, italic, font name, font size, colour.
+    """
+    eff = _effective_run_props(para, doc)
+    for run in para.runs:
+        f = run.font
+        # Bold – heading styles default to True; write False to block that
+        if run.bold is None:
+            run.bold = eff["bold"]
+        # Italic
+        if run.italic is None:
+            run.italic = eff["italic"]
+        # Font size – e.g. Heading 1 is 16 pt, body text is 11 pt
+        if f.size is None and eff["size"] is not None:
+            f.size = eff["size"]
+        # Font name – e.g. Calibri Light vs Calibri
+        if f.name is None and eff["name"] is not None:
+            f.name = eff["name"]
+        # Colour – prevent themed heading colour (e.g. blue accent)
+        try:
+            if f.color.type is None:
+                if eff["color_auto"]:
+                    # Write <w:color w:val="auto"/> to block theme colour
+                    rPr = run._r.find(qn("w:rPr"))
+                    if rPr is None:
+                        rPr = OxmlElement("w:rPr")
+                        run._r.insert(0, rPr)
+                    c = rPr.find(qn("w:color"))
+                    if c is None:
+                        c = OxmlElement("w:color")
+                        rPr.append(c)
+                    c.set(qn("w:val"), "auto")
+                elif eff["color_rgb"] is not None:
+                    f.color.rgb = eff["color_rgb"]
+        except Exception:
+            pass
+    # Freeze paragraph-level spacing and indentation
+    _freeze_para_properties(para)
+
+
+def _replace_prefix_in_para(para, old_prefix: str, new_prefix: str) -> None:
+    """Surgically replace the numbering prefix in a paragraph's runs.
+
+    Only the run(s) that contain the old prefix are modified.  All runs
+    that hold pure heading-body text are left completely untouched, so their
+    character formatting (bold, italic, colour …) is preserved exactly.
+    """
     if not para.runs:
-        para.add_run(new_text)
+        if new_prefix:
+            para.add_run(new_prefix)
         return
-    para.runs[0].text = new_text
-    for run in para.runs[1:]:
-        run.text = ""
+    if old_prefix == new_prefix:
+        return
+    if not old_prefix:
+        # Nothing to strip; prepend new_prefix to the first run
+        para.runs[0].text = new_prefix + para.runs[0].text
+        return
+
+    # Consume old_prefix across one or more runs
+    remaining = old_prefix
+    new_written = False
+    for run in para.runs:
+        if not remaining:
+            break
+        t = run.text
+        if not t:
+            continue
+        if remaining.startswith(t):
+            # This run is fully inside the prefix
+            remaining = remaining[len(t):]
+            if not new_written:
+                run.text = new_prefix
+                new_written = True
+            else:
+                run.text = ""
+        elif t.startswith(remaining):
+            # Prefix ends inside this run; the rest is heading body
+            body_in_run = t[len(remaining):]
+            remaining = ""
+            if not new_written:
+                run.text = new_prefix + body_in_run
+                new_written = True
+            else:
+                run.text = body_in_run
+        else:
+            # Mismatch (e.g. tracked-change artefacts) → safe fallback
+            full = para.text
+            body = full[len(old_prefix):] if full.startswith(old_prefix) else full
+            para.runs[0].text = new_prefix + body
+            for r in para.runs[1:]:
+                r.text = ""
+            return
+
+    if not new_written and new_prefix:
+        # old_prefix was longer than all run text (shouldn't happen, but safe)
+        para.runs[0].text = new_prefix + para.runs[0].text
 
 
 def apply_heading_styles(
@@ -679,7 +899,7 @@ def apply_heading_styles(
         new_text   = new_prefix + body
 
         # ── 1. Freeze current formatting so style change doesn't alter looks ─
-        _freeze_run_formatting(para)
+        _freeze_run_formatting(para, doc)
 
         # ── 2. Apply Heading style ────────────────────────────────────────
         current_style_id = None
@@ -768,11 +988,11 @@ def apply_heading_styles(
                     para._p.append(ins_el)
                 change_id += 1
 
-            # Keep only the body text in the original runs
-            _set_paragraph_text(para, body)
+            # Remove old prefix from runs; body runs are untouched
+            _replace_prefix_in_para(para, old_prefix, "")
         else:
-            # Direct mode: just write the complete new text
-            _set_paragraph_text(para, new_text)
+            # Direct mode: replace old prefix with new prefix surgically
+            _replace_prefix_in_para(para, old_prefix, new_prefix)
 
 
 # ---------------------------------------------------------------------------
