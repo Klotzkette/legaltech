@@ -43,52 +43,42 @@ for _i in range(1, 10):
 # Numbering TYPE detection  (not level — level is assigned by context)
 # ---------------------------------------------------------------------------
 
-# Each regex maps text to a numbering TYPE. The level is determined later by
-# _context_aware_levels() which considers the document's overall structure.
 _ROMAN_RE = r'(?:XIV|XIII|XII|XI|IX|VIII|VII|VI|IV|III|II|X|I|V)'
 
 _TYPE_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    # Decimal multi-level (most specific first)
     (re.compile(r'^\d+\.\d+\.\d+\.\d+[\s\)]'),  "DECIMAL_4"),
     (re.compile(r'^\d+\.\d+\.\d+[\s\)]'),         "DECIMAL_3"),
     (re.compile(r'^\d+\.\d+[\s\)]'),              "DECIMAL_2"),
     (re.compile(r'^\d{1,2}\.\s+\S'),              "DECIMAL_1"),
-    # Roman & capital-letter
     (re.compile(rf'^{_ROMAN_RE}\.\s+\S'),          "ROMAN"),
     (re.compile(r'^[A-Z]{1,3}\.\s+\S'),            "CAPITAL"),
-    # § / Art. / Ziff. – German legal
     (re.compile(r'^§\s*\d+'),                      "PARAGRAPH"),
-    (re.compile(r'^Art\.?\s*\d+', re.I),           "ARTICLE"),   # Art. 1
-    (re.compile(r'^Ziff?\.?\s*\d+', re.I),         "ZIFFER"),    # Ziff. 1
-    # Structural keywords common in German official documents
+    (re.compile(r'^Art\.?\s*\d+', re.I),           "ARTICLE"),
+    (re.compile(r'^Ziff?\.?\s*\d+', re.I),         "ZIFFER"),
     (re.compile(r'^(?:Teil|Kapitel|Abschnitt|Titel)\s+(?:\d+|[IVX]+)\b', re.I), "CHAPTER"),
-    # Note: (1)/(a)/a)/aa) patterns are intentionally absent – in German legal
-    # documents those are numbered body-text paragraphs, NOT headings.
+    # (1)/(a)/a)/aa) intentionally absent – German legal body text, NOT headings.
 ]
 
-# Natural priority of numbering types in German legal documents.
-# Types with the SAME priority are treated as peers (same outline level).
 _TYPE_PRIORITY: Dict[str, int] = {
-    "PARAGRAPH":    10,   # § 1, § 2
-    "CHAPTER":      10,   # Teil I, Kapitel 1, Abschnitt 1  (top-level)
-    "ROMAN":        20,   # I., II., III.
-    "ARTICLE":      20,   # Art. 1 (same level as Roman in legal docs)
-    "CAPITAL":      30,   # A., B., C.
-    "ZIFFER":       35,   # Ziff. 1  (slightly below CAPITAL)
-    "DECIMAL_1":    35,   # 1., 2., 3.  (slightly below CAPITAL)
-    "DECIMAL_2":    40,   # 1.1, 1.2
-    "DECIMAL_3":    50,   # 1.1.1
-    "DECIMAL_4":    60,   # 1.1.1.1
-    "BOLD_ONLY":    15,   # bold text without numbering
-    "WORD_AUTO":    25,   # Word automatic numbering (numPr)
+    "PARAGRAPH":    10,
+    "CHAPTER":      10,
+    "ROMAN":        20,
+    "ARTICLE":      20,
+    "CAPITAL":      30,
+    "ZIFFER":       35,
+    "DECIMAL_1":    35,
+    "DECIMAL_2":    40,
+    "DECIMAL_3":    50,
+    "DECIMAL_4":    60,
+    "BOLD_ONLY":    15,
+    "WORD_AUTO":    25,
 }
 
-# Pattern to STRIP the manual prefix from the text (in order of specificity)
 _STRIP_PATTERNS: List[re.Pattern] = [
-    re.compile(r'^\d+\.\d+\.\d+\.\d+[\s\)]+'),   # 1.2.3.4
-    re.compile(r'^\d+\.\d+\.\d+[\s\)]+'),          # 1.2.3
-    re.compile(r'^\d+\.\d+[\s\)]+'),               # 1.2
-    re.compile(r'^\d{1,2}\.\s+'),                  # 1.
+    re.compile(r'^\d+\.\d+\.\d+\.\d+[\s\)]+'),
+    re.compile(r'^\d+\.\d+\.\d+[\s\)]+'),
+    re.compile(r'^\d+\.\d+[\s\)]+'),
+    re.compile(r'^\d{1,2}\.\s+'),
     re.compile(rf'^{_ROMAN_RE}\.\s+', re.IGNORECASE),
     re.compile(r'^[A-Z]{1,3}\.\s+'),
     re.compile(r'^§\s*\d+\s*[:\-–]?\s*'),
@@ -103,11 +93,9 @@ _STRIP_PATTERNS: List[re.Pattern] = [
 # ---------------------------------------------------------------------------
 
 def _level_from_style(para) -> Optional[int]:
-    """Return heading level from paragraph style name, or None."""
     name = para.style.name.lower().strip()
     if name in _HEADING_NAME_MAP:
         return _HEADING_NAME_MAP[name]
-    # Pattern match:  "my heading 2"  or  "custom überschrift 3"
     m = re.search(r'(?:heading|überschrift|uberschrift|header)\s+(\d+)', name)
     if m:
         level = int(m.group(1))
@@ -116,7 +104,6 @@ def _level_from_style(para) -> Optional[int]:
 
 
 def _style_font_size_pt(para) -> Optional[float]:
-    """Return the paragraph's effective font size in points, or None."""
     try:
         sz = para.style.font.size
         if sz is not None:
@@ -127,7 +114,6 @@ def _style_font_size_pt(para) -> Optional[float]:
 
 
 def _has_word_auto_numbering(para) -> bool:
-    """Return True if the paragraph has Word automatic numbering (numPr, numId > 0)."""
     pPr = para._p.find(qn("w:pPr"))
     if pPr is None:
         return False
@@ -144,7 +130,6 @@ def _has_word_auto_numbering(para) -> bool:
 
 
 def _detect_numbering_type(text: str) -> Optional[str]:
-    """Return the numbering TYPE of a heading text, or None."""
     for pattern, type_name in _TYPE_PATTERNS:
         if pattern.match(text):
             return type_name
@@ -152,29 +137,22 @@ def _detect_numbering_type(text: str) -> Optional[str]:
 
 
 def _is_heading_heuristic(para) -> bool:
-    """Return True if the paragraph LOOKS like a heading without a numbered
-    prefix or explicit heading style.
+    """Conservative bold / ALL-CAPS / large-font heading detector.
 
-    Conservative rules to avoid false positives in German legal documents:
-    - Bold-only: ALL runs bold AND ≤ 80 chars AND ≤ 7 words AND no trailing
-      sentence punctuation AND doesn't start with a list marker or parenthesis.
-    - ALL-CAPS:  ≤ 60 chars, ≤ 5 words, at least one letter.
-    - Large font: style font ≥ 14 pt with ≤ 120 chars.
+    Strict thresholds avoid false positives in German legal body text.
     """
     text = para.text.strip()
     if not text:
         return False
     if text.startswith(("•", "–", "-", "*", "(", "[")):
         return False
-    # Sentences (body text) typically end with these characters
     if re.search(r"[.,;!?]\s*$", text):
         return False
 
     words = text.split()
 
-    # ── Bold-only heuristic (most conservative) ──────────────────────────
+    # Bold-only: ALL runs bold AND short AND few words
     if len(text) <= 80 and len(words) <= 7:
-        # Resolve effective bold: run.bold may be None (inherit from style)
         style_bold = False
         try:
             style_bold = para.style.font.bold is True
@@ -192,13 +170,13 @@ def _is_heading_heuristic(para) -> bool:
         if non_empty and all(_run_is_bold(r) for r in non_empty):
             return True
 
-    # ── ALL-CAPS heuristic ────────────────────────────────────────────────
+    # ALL-CAPS
     if len(text) <= 60 and len(words) <= 5 and text == text.upper() and any(
         c.isalpha() for c in text
     ):
         return True
 
-    # ── Large-font heuristic ──────────────────────────────────────────────
+    # Large font
     pt = _style_font_size_pt(para)
     if pt is not None and pt >= 14 and len(text) <= 120:
         return True
@@ -209,19 +187,10 @@ def _is_heading_heuristic(para) -> bool:
 def _context_aware_levels(
     heading_info: List[Tuple[int, str]],
 ) -> Dict[int, int]:
-    """
-    Assign heading levels based on the numbering TYPE hierarchy found in the
-    document.  Types with lower priority numbers are higher in the outline.
-
-    Types that share the same _TYPE_PRIORITY value are treated as peers
-    (they appear at the same outline level).
-
-    Returns {paragraph_index: level}.
-    """
+    """Assign heading levels based on numbering-type hierarchy in the document."""
     if not heading_info:
         return {}
 
-    # Collect unique types in first-appearance order.
     present_types: List[str] = []
     first_para_idx: Dict[str, int] = {}
     for para_idx, ntype in heading_info:
@@ -229,14 +198,6 @@ def _context_aware_levels(
             present_types.append(ntype)
             first_para_idx[ntype] = para_idx
 
-    # Start with global type priorities, then adjust for late-appearing types.
-    # If a type T has a higher global priority (lower priority number) BUT
-    # first appears in the document AFTER ≥3 occurrences of lower-priority
-    # types, it likely isn't the top-level structure – demote it to be a peer
-    # of the types that dominate the beginning of the document.
-    # Example: Roman numerals run through most of the document; a single §
-    # sign appears at the end → § should be a peer of the Roman numerals,
-    # not the "super-level" that demotes everything else to 1.1 / 1.1.1.
     adjusted_prio: Dict[str, int] = {t: _TYPE_PRIORITY.get(t, 99)
                                       for t in present_types}
 
@@ -248,20 +209,16 @@ def _context_aware_levels(
             if nt != t and pi < first and _TYPE_PRIORITY.get(nt, 99) > prio
         )
         if count_before >= 3:
-            # Demote this late-arriving high-priority type: make it a peer of
-            # whatever type first appeared in the document.
             first_type = present_types[0]
             adjusted_prio[t] = adjusted_prio[first_type]
 
-    # Sort by (adjusted_priority, first_occurrence_index)
     present_types.sort(key=lambda t: (adjusted_prio[t], first_para_idx[t]))
 
-    # Assign levels using ADJUSTED priorities so peers share the same level
     type_to_level: Dict[str, int] = {}
     current_level = 0
     last_priority = -1
     for t in present_types:
-        p = adjusted_prio[t]          # ← adjusted, not original
+        p = adjusted_prio[t]
         if p != last_priority:
             current_level += 1
             last_priority = p
@@ -271,18 +228,11 @@ def _context_aware_levels(
 
 
 def strip_manual_numbering(text: str) -> str:
-    """Remove a manual numbering prefix from a heading text."""
     stripped, _ = _split_prefix(text)
     return stripped
 
 
 def _split_prefix(text: str) -> Tuple[str, str]:
-    """Return (stripped_body, deleted_prefix) for a heading text.
-
-    ``stripped_body`` is the heading content without the numbering prefix.
-    ``deleted_prefix`` is the part that was removed (e.g. "I. " or "1.1 ").
-    If no prefix is found both are (text, "").
-    """
     for pattern in _STRIP_PATTERNS:
         m = pattern.match(text)
         if m:
@@ -297,71 +247,43 @@ def _split_prefix(text: str) -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def detect_headings(doc: Document) -> Dict[int, int]:
-    """
-    Detect heading paragraphs using styles, numbering-type analysis, and
-    bold-text heuristics.
-
-    Two-phase approach:
-      Phase 1 – classify each paragraph as *style-based* (level already known)
-               or *type-based* (numbering type detected, level TBD).
-      Phase 2 – assign context-aware levels to the type-based headings using
-               ``_context_aware_levels``.
-
-    Returns {paragraph_index: level} for all detected headings.
-    """
-    # Phase 1: Classify paragraphs
-    style_headings: Dict[int, int] = {}           # para_idx → level
-    type_headings: List[Tuple[int, str]] = []     # (para_idx, numbering_type)
+    """Detect headings via styles, numbering patterns, and formatting heuristics."""
+    style_headings: Dict[int, int] = {}
+    type_headings: List[Tuple[int, str]] = []
 
     for i, para in enumerate(doc.paragraphs):
         text = para.text.strip()
         if not text:
             continue
 
-        # Highest priority: explicit heading style
         style_level = _level_from_style(para)
         if style_level is not None:
             style_headings[i] = style_level
             continue
 
-        # Second: detect numbering type from text.
-        # Only consider short paragraphs – body-text can also start with "1."
-        # but tends to be longer.  Also reject numbered full sentences: if the
-        # body (after stripping the prefix) ends with a period and is longer
-        # than 25 characters, it is a list item / body paragraph, not a heading.
         if len(text) <= 120:
             num_type = _detect_numbering_type(text)
             if num_type is not None:
                 body_check, _ = _split_prefix(text)
-                # If the body (after stripping the prefix) ends with a period
-                # AND has 3+ words, it is a numbered body-text sentence, not
-                # a heading title.  Heading titles are typically noun phrases
-                # of 1-2 words without a trailing full stop.
                 body_core = body_check.rstrip(".")
                 is_sentence = (
                     body_check.endswith(".")
                     and len(body_check) > 15
                     and len(body_core.split()) >= 3
                 )
-                if is_sentence:
-                    pass  # Numbered sentence → body text, not a heading
-                else:
+                if not is_sentence:
                     type_headings.append((i, num_type))
                     continue
 
-        # Third: paragraph with existing Word automatic numbering (numPr)
         if _has_word_auto_numbering(para) and len(text) <= 200:
             type_headings.append((i, "WORD_AUTO"))
             continue
 
-        # Fourth: formatting heuristic (bold, ALL-CAPS, large font, short text)
         if _is_heading_heuristic(para):
             type_headings.append((i, "BOLD_ONLY"))
 
-    # Phase 2: Assign levels to type-based headings
     type_levels = _context_aware_levels(type_headings)
 
-    # Merge both sources
     headings: Dict[int, int] = {}
     headings.update(style_headings)
     headings.update(type_levels)
@@ -369,11 +291,6 @@ def detect_headings(doc: Document) -> Dict[int, int]:
 
 
 def normalize_levels(headings: Dict[int, int]) -> Dict[int, int]:
-    """
-    Remap heading levels so they are consecutive starting from 1.
-
-    Example: if the document uses levels 1, 3, 5  →  remap to 1, 2, 3.
-    """
     if not headings:
         return headings
     unique = sorted(set(headings.values()))
@@ -382,23 +299,10 @@ def normalize_levels(headings: Dict[int, int]) -> Dict[int, int]:
 
 
 def compute_number_strings(headings: Dict[int, int]) -> Dict[int, str]:
-    """
-    Compute 1. / 1.1 / 1.1.1 … prefix strings for each heading paragraph.
-
-    Returns {para_idx: number_string}, e.g.::
-
-        {2: "1.", 4: "1.1", 8: "1.1.1", 10: "1.2"}
-
-    Level 1 uses a trailing dot ("1."), deeper levels use dots only as
-    separators ("1.1", "1.1.1") matching the German legal convention.
-    """
     counters: List[int] = [0] * 10
     result: Dict[int, str] = {}
     for idx in sorted(headings.keys()):
         level = headings[idx]
-        # If parent levels have never been seen, start them at 1 so the first
-        # level-2 heading gets "1.1" (not "0.1") and the first level-3 heading
-        # gets "1.1.1" (not "0.0.1").
         for parent in range(level - 1):
             if counters[parent] == 0:
                 counters[parent] = 1
@@ -415,12 +319,6 @@ def compute_number_strings(headings: Dict[int, int]) -> Dict[int, str]:
 # ---------------------------------------------------------------------------
 
 def _build_abstract_num(abstract_num_id: int, style_ids: Dict[int, str]) -> object:
-    """Build an abstractNum XML element for 1. / 1.1 / 1.1.1 numbering.
-
-    *style_ids* maps heading level (1-9) to the actual Word style ID (e.g. "Heading1").
-    Adding w:pStyle to each level links the multilevel list to the heading styles so
-    Word correctly continues numbering when the user presses Enter.
-    """
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
 
@@ -438,7 +336,6 @@ def _build_abstract_num(abstract_num_id: int, style_ids: Dict[int, str]) -> obje
         num_fmt = OxmlElement("w:numFmt")
         num_fmt.set(qn("w:val"), "decimal")
 
-        # Level text:   %1.  |  %1.%2  |  %1.%2.%3  …
         if i == 0:
             lvl_text_val = "%1."
         else:
@@ -456,7 +353,6 @@ def _build_abstract_num(abstract_num_id: int, style_ids: Dict[int, str]) -> obje
         ind.set(qn("w:hanging"), "360")
         pPr.append(ind)
 
-        # OOXML CT_Lvl schema order: start, numFmt, [pStyle], lvlText, lvlJc, pPr
         sid = style_ids.get(i + 1)
         ordered = [start, num_fmt]
         if sid:
@@ -473,11 +369,6 @@ def _build_abstract_num(abstract_num_id: int, style_ids: Dict[int, str]) -> obje
 
 
 def _ensure_numbering_part(doc: Document):
-    """Return the document's numbering part, creating it from scratch if absent.
-
-    python-docx 1.2.0 declares ``NumberingPart.new()`` but raises
-    ``NotImplementedError``, so we build the minimal XML element ourselves.
-    """
     try:
         return doc.part.numbering_part
     except Exception:
@@ -501,15 +392,9 @@ def _ensure_numbering_part(doc: Document):
 
 
 def setup_numbering(doc: Document) -> int:
-    """
-    Add a 1. / 1.1 / 1.1.1 multilevel numbering to the document.
-
-    Returns the numId to be referenced by heading paragraphs.
-    """
     np = _ensure_numbering_part(doc)
     num_el = np._element
 
-    # Collect actual style IDs for the Heading 1-9 styles present in this doc
     style_ids: Dict[int, str] = {}
     for lvl in range(1, 10):
         try:
@@ -517,7 +402,6 @@ def setup_numbering(doc: Document) -> int:
         except KeyError:
             pass
 
-    # Find next available IDs
     abstract_nums = num_el.findall(qn("w:abstractNum"))
     max_abs = max(
         (int(a.get(qn("w:abstractNumId"), -1)) for a in abstract_nums),
@@ -532,14 +416,12 @@ def setup_numbering(doc: Document) -> int:
     )
     new_num_id = max_num + 1
 
-    # Insert abstractNum before the first <w:num> (schema requirement)
     abstract_num = _build_abstract_num(new_abs_id, style_ids)
     if nums:
         nums[0].addprevious(abstract_num)
     else:
         num_el.append(abstract_num)
 
-    # Add <w:num> reference
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(new_num_id))
     abs_id_el = OxmlElement("w:abstractNumId")
@@ -551,10 +433,6 @@ def setup_numbering(doc: Document) -> int:
 
 
 def link_styles_to_numbering(doc: Document, num_id: int) -> None:
-    """
-    Add <w:numPr> to Heading 1-9 styles so Word auto-continues
-    the 1. / 1.1 / 1.1.1 numbering when the user presses Enter.
-    """
     for level in range(1, 10):
         try:
             style = doc.styles[f"Heading {level}"]
@@ -566,7 +444,6 @@ def link_styles_to_numbering(doc: Document, num_id: int) -> None:
             pPr = OxmlElement("w:pPr")
             style.element.append(pPr)
 
-        # Remove any existing numPr
         for existing in pPr.findall(qn("w:numPr")):
             pPr.remove(existing)
 
@@ -581,217 +458,205 @@ def link_styles_to_numbering(doc: Document, num_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Apply heading styles (with optional Track Changes recording)
+# Formatting freeze – XML-level (the only reliable approach)
+# ---------------------------------------------------------------------------
+#
+# python-docx font properties (run.font.name, run.font.size, run.bold …)
+# return None when the value is inherited from the style.  Walking the
+# python-docx style chain often still returns None because style fonts use
+# theme-font references (w:theme="minorLatinFont") that python-docx doesn't
+# resolve to a real font name.
+#
+# The only reliable fix is to work directly with OOXML elements:
+#   1. Collect the raw <w:rFonts>, <w:sz>, <w:b>, <w:i>, <w:color> elements
+#      from the full style chain (run rPr → para mark rPr → style chain → docDefaults).
+#   2. Copy them verbatim into each run's rPr BEFORE the style change.
+# This preserves theme-font references, half-point sizes, etc. exactly as they
+# were rendered.
+#
 # ---------------------------------------------------------------------------
 
-# XML namespace shorthand used by the formatting helpers below
+# OOXML W namespace (used for direct element access below)
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WP = "{" + _W + "}"            # element-level prefix, e.g. _WP + "rFonts"
+
+# rPr child tags we consider visually significant
+_RPR_VISUAL_TAGS = ("rFonts", "sz", "szCs", "b", "bCs", "i", "iCs",
+                    "color", "lang", "kern", "spacing", "w", "vertAlign",
+                    "strike", "dstrike", "u", "highlight")
 
 
-def _walk_style_chain(para):
-    """Yield paragraph styles from most-specific (para.style) to root."""
+def _collect_rpr_chain(para, run, doc) -> Dict[str, object]:
+    """Collect effective rPr child elements for *run* in *para*.
+
+    Walks the inheritance chain from most-specific to least-specific:
+      run's own rPr  →  para-mark rPr (pPr/rPr)  →  style chain  →  docDefaults
+
+    Returns {local_tag_name: lxml_element} – the first (most-specific) value
+    found for each tag wins.
+    """
+    result: Dict[str, object] = {}
+
+    def _scan_rpr(rPr_el):
+        if rPr_el is None:
+            return
+        for child in rPr_el:
+            # lxml tag looks like "{namespace}localname"
+            local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if local in _RPR_VISUAL_TAGS and local not in result:
+                result[local] = child
+
+    # 1. Run's own rPr
+    _scan_rpr(run._r.find(f"{_WP}rPr"))
+
+    # 2. Paragraph-mark rPr  (pPr/rPr)
+    pPr = para._p.find(f"{_WP}pPr")
+    if pPr is not None:
+        _scan_rpr(pPr.find(f"{_WP}rPr"))
+
+    # 3. Style chain (most-specific first: para.style → base_style → …)
     sty = para.style
-    seen: set = set()
+    visited: set = set()
     while sty is not None:
         sid = getattr(sty, "style_id", id(sty))
-        if sid in seen:
+        if sid in visited:
             break
-        seen.add(sid)
-        yield sty
-        sty = getattr(sty, "base_style", None)
-
-
-def _doc_default_font(doc) -> dict:
-    """Return {'name': str|None, 'size': Pt|None} from w:docDefaults."""
-    result: dict = {"name": None, "size": None}
-    try:
-        rPrDef = doc.element.find(f".//{{{_W}}}rPrDefault")
-        if rPrDef is None:
-            return result
-        rPr = rPrDef.find(f"{{{_W}}}rPr")
-        if rPr is None:
-            return result
-        rFonts = rPr.find(f"{{{_W}}}rFonts")
-        if rFonts is not None:
-            result["name"] = (
-                rFonts.get(f"{{{_W}}}ascii") or rFonts.get(f"{{{_W}}}hAnsi")
-            )
-        sz = rPr.find(f"{{{_W}}}sz")
-        if sz is not None:
-            v = sz.get(f"{{{_W}}}val")
-            if v:
-                from docx.shared import Pt as _Pt
-                result["size"] = _Pt(int(v) / 2)
-    except Exception:
-        pass
-    return result
-
-
-def _effective_run_props(para, doc) -> dict:
-    """Resolve fully-effective character properties through the style chain.
-
-    Walks the chain root-first (so the most-specific style wins last) and
-    falls back to document-level defaults for font name and size.
-
-    Returns
-    -------
-    dict with keys:
-        bold        bool   (defaults to False)
-        italic      bool   (defaults to False)
-        name        str | None
-        size        Pt object | None
-        color_auto  bool   (True → no explicit colour → emit <w:color val="auto">)
-        color_rgb   RGBColor | None
-    """
-    result: dict = {
-        "bold": False,
-        "italic": False,
-        "name": None,
-        "size": None,
-        "color_auto": True,
-        "color_rgb": None,
-    }
-    # Build chain and reverse so root (least-specific) is processed first;
-    # each style's values overwrite the previous → most-specific wins at the end.
-    chain = list(_walk_style_chain(para))
-    for sty in reversed(chain):
+        visited.add(sid)
         try:
-            f = sty.font
-            if f.bold is not None:
-                result["bold"] = f.bold
-            if f.italic is not None:
-                result["italic"] = f.italic
-            if f.name is not None:
-                result["name"] = f.name
-            if f.size is not None:
-                result["size"] = f.size
-            try:
-                if f.color.type is not None:
-                    result["color_auto"] = False
-                    result["color_rgb"] = getattr(f.color, "rgb", None)
-            except Exception:
-                pass
+            _scan_rpr(sty.element.find(f"{_WP}rPr"))
         except Exception:
             pass
-    # Fill name / size from document defaults when still unresolved
-    if result["name"] is None or result["size"] is None:
-        dd = _doc_default_font(doc)
-        if result["name"] is None:
-            result["name"] = dd["name"]
-        if result["size"] is None:
-            result["size"] = dd["size"]
+        sty = getattr(sty, "base_style", None)
+
+    # 4. Document defaults
+    try:
+        rPrDef = doc.element.find(f".//{_WP}rPrDefault")
+        if rPrDef is not None:
+            _scan_rpr(rPrDef.find(f"{_WP}rPr"))
+    except Exception:
+        pass
+
     return result
+
+
+def _freeze_run_formatting(para, doc) -> None:
+    """Pin all effective character formatting explicitly onto every run.
+
+    Must be called BEFORE changing ``para.style``.  After this call every
+    run has fully explicit rPr attributes, so the subsequent style change
+    cannot alter the visual appearance (font family, size, bold, italic,
+    colour, language …).
+
+    Also calls _freeze_para_properties to block heading-style spacing/indent.
+    """
+    for run in para.runs:
+        eff = _collect_rpr_chain(para, run, doc)
+
+        # Ensure the run has an rPr container
+        run_rPr = run._r.find(f"{_WP}rPr")
+        if run_rPr is None:
+            run_rPr = OxmlElement("w:rPr")
+            run._r.insert(0, run_rPr)
+
+        # Copy every effective property that is not already explicit on this run
+        for tag in _RPR_VISUAL_TAGS:
+            if run_rPr.find(f"{_WP}{tag}") is None:
+                if tag in eff:
+                    run_rPr.append(copy.deepcopy(eff[tag]))
+                elif tag == "b":
+                    # No bold defined anywhere in chain → explicitly NOT bold
+                    # (Heading styles are bold by default; this blocks that)
+                    b = OxmlElement("w:b")
+                    b.set(qn("w:val"), "0")
+                    run_rPr.append(b)
+                elif tag == "i":
+                    i = OxmlElement("w:i")
+                    i.set(qn("w:val"), "0")
+                    run_rPr.append(i)
+                elif tag == "color":
+                    # No explicit color anywhere → write auto to block blue
+                    # heading theme color
+                    c = OxmlElement("w:color")
+                    c.set(qn("w:val"), "auto")
+                    run_rPr.append(c)
+
+    _freeze_para_properties(para)
 
 
 def _freeze_para_properties(para) -> None:
-    """Write explicit paragraph-level spacing/indent so heading-style
-    defaults cannot override them after the style change.
+    """Write effective paragraph-level spacing/indent/justification explicitly.
 
-    Only acts when no explicit value is already present on the paragraph;
-    copies the current effective value from the style chain, or writes a
-    safe zero/default so the heading style's values are blocked.
+    Must be called BEFORE changing ``para.style``.  Explicit pPr children
+    have higher priority than style defaults, so the heading style's spacing
+    and indentation cannot override them after the change.
     """
-    chain = list(_walk_style_chain(para))   # most-specific first
-    pPr = para._p.find(qn("w:pPr"))
+    # Ensure pPr exists
+    pPr = para._p.find(f"{_WP}pPr")
     if pPr is None:
         pPr = OxmlElement("w:pPr")
         para._p.insert(0, pPr)
 
-    for tag in ("w:ind", "w:spacing", "w:jc"):
-        if pPr.find(qn(tag)) is not None:
-            continue  # already explicit on paragraph → survives style change
+    for tag in ("ind", "spacing", "jc"):
+        # If already explicit on this paragraph, it will survive the style
+        # change automatically – nothing to do.
+        if pPr.find(f"{_WP}{tag}") is not None:
+            continue
 
-        # Find the most-specific effective value in the style chain
+        # Find effective value in style chain (most-specific first)
         eff_el = None
-        for sty in chain:
+        sty = para.style
+        visited: set = set()
+        while sty is not None:
+            sid = getattr(sty, "style_id", id(sty))
+            if sid in visited:
+                break
+            visited.add(sid)
             try:
-                sty_pPr = sty.element.find(qn("w:pPr"))
+                sty_pPr = sty.element.find(f"{_WP}pPr")
                 if sty_pPr is not None:
-                    child = sty_pPr.find(qn(tag))
+                    child = sty_pPr.find(f"{_WP}{tag}")
                     if child is not None:
                         eff_el = copy.deepcopy(child)
                         break
             except Exception:
                 pass
+            sty = getattr(sty, "base_style", None)
 
         if eff_el is not None:
-            # The style chain already defines a value; write it explicitly.
-            # For spacing, also ensure both before AND after attributes are
-            # present so a partial element can't be augmented by the heading.
-            if tag == "w:spacing":
+            # For spacing: ensure both w:before and w:after are present so
+            # the heading style cannot augment a partial element.
+            if tag == "spacing":
                 if eff_el.get(qn("w:before")) is None:
                     eff_el.set(qn("w:before"), "0")
                 if eff_el.get(qn("w:after")) is None:
                     eff_el.set(qn("w:after"), "0")
             pPr.append(eff_el)
-        elif tag == "w:ind":
-            # No indent in style chain → write zero to block heading indent
+        elif tag == "ind":
+            # No indent found → write zero to block heading indent
             ind = OxmlElement("w:ind")
             ind.set(qn("w:left"), "0")
             ind.set(qn("w:hanging"), "0")
             pPr.append(ind)
-        elif tag == "w:spacing":
-            # No spacing in style chain → block heading's space-before
+        elif tag == "spacing":
+            # No spacing found → write zero to block heading space-before
             sp = OxmlElement("w:spacing")
             sp.set(qn("w:before"), "0")
             sp.set(qn("w:after"), "0")
             pPr.append(sp)
-        # w:jc (justification): leave absent if not in chain – justified/left
-        # body text is usually left-aligned and headings are too, so no change.
+        # jc: leave absent when not found (body and heading are both usually left)
 
 
-def _freeze_run_formatting(para, doc) -> None:
-    """Pin fully-resolved character formatting explicitly onto every run.
-
-    Must be called BEFORE changing ``para.style``.  Resolves the complete
-    style inheritance chain (including document defaults) so that the
-    subsequent style change cannot alter the visual appearance.
-
-    Properties frozen: bold, italic, font name, font size, colour.
-    """
-    eff = _effective_run_props(para, doc)
-    for run in para.runs:
-        f = run.font
-        # Bold – heading styles default to True; write False to block that
-        if run.bold is None:
-            run.bold = eff["bold"]
-        # Italic
-        if run.italic is None:
-            run.italic = eff["italic"]
-        # Font size – e.g. Heading 1 is 16 pt, body text is 11 pt
-        if f.size is None and eff["size"] is not None:
-            f.size = eff["size"]
-        # Font name – e.g. Calibri Light vs Calibri
-        if f.name is None and eff["name"] is not None:
-            f.name = eff["name"]
-        # Colour – prevent themed heading colour (e.g. blue accent)
-        try:
-            if f.color.type is None:
-                if eff["color_auto"]:
-                    # Write <w:color w:val="auto"/> to block theme colour
-                    rPr = run._r.find(qn("w:rPr"))
-                    if rPr is None:
-                        rPr = OxmlElement("w:rPr")
-                        run._r.insert(0, rPr)
-                    c = rPr.find(qn("w:color"))
-                    if c is None:
-                        c = OxmlElement("w:color")
-                        rPr.append(c)
-                    c.set(qn("w:val"), "auto")
-                elif eff["color_rgb"] is not None:
-                    f.color.rgb = eff["color_rgb"]
-        except Exception:
-            pass
-    # Freeze paragraph-level spacing and indentation
-    _freeze_para_properties(para)
-
+# ---------------------------------------------------------------------------
+# Surgical prefix replacement
+# ---------------------------------------------------------------------------
 
 def _replace_prefix_in_para(para, old_prefix: str, new_prefix: str) -> None:
-    """Surgically replace the numbering prefix in a paragraph's runs.
+    """Replace the numbering prefix while preserving ALL run formatting.
 
-    Only the run(s) that contain the old prefix are modified.  All runs
-    that hold pure heading-body text are left completely untouched, so their
-    character formatting (bold, italic, colour …) is preserved exactly.
+    Walks the runs consuming ``old_prefix`` character-by-character across run
+    boundaries.  Only the run(s) that actually contain the old prefix are
+    modified; every run that holds purely body text is left completely
+    untouched (its bold, italic, colour, etc. are preserved exactly).
     """
     if not para.runs:
         if new_prefix:
@@ -800,11 +665,9 @@ def _replace_prefix_in_para(para, old_prefix: str, new_prefix: str) -> None:
     if old_prefix == new_prefix:
         return
     if not old_prefix:
-        # Nothing to strip; prepend new_prefix to the first run
         para.runs[0].text = new_prefix + para.runs[0].text
         return
 
-    # Consume old_prefix across one or more runs
     remaining = old_prefix
     new_written = False
     for run in para.runs:
@@ -813,25 +676,29 @@ def _replace_prefix_in_para(para, old_prefix: str, new_prefix: str) -> None:
         t = run.text
         if not t:
             continue
+
         if remaining.startswith(t):
-            # This run is fully inside the prefix
+            # This run is fully inside the old prefix
             remaining = remaining[len(t):]
             if not new_written:
                 run.text = new_prefix
                 new_written = True
             else:
                 run.text = ""
+
         elif t.startswith(remaining):
-            # Prefix ends inside this run; the rest is heading body
-            body_in_run = t[len(remaining):]
+            # The prefix ends inside this run; the rest is body text
+            body_tail = t[len(remaining):]
             remaining = ""
             if not new_written:
-                run.text = new_prefix + body_in_run
+                run.text = new_prefix + body_tail
                 new_written = True
             else:
-                run.text = body_in_run
+                run.text = body_tail
+
         else:
-            # Mismatch (e.g. tracked-change artefacts) → safe fallback
+            # Mismatch (e.g. tracked-change runs interspersed) → safe fallback:
+            # collapse to single run to guarantee correctness
             full = para.text
             body = full[len(old_prefix):] if full.startswith(old_prefix) else full
             para.runs[0].text = new_prefix + body
@@ -840,9 +707,13 @@ def _replace_prefix_in_para(para, old_prefix: str, new_prefix: str) -> None:
             return
 
     if not new_written and new_prefix:
-        # old_prefix was longer than all run text (shouldn't happen, but safe)
-        para.runs[0].text = new_prefix + para.runs[0].text
+        # Safety: prefix spanned more than all run text (shouldn't happen)
+        para.runs[0].text = new_prefix + para.runs[0].text[len(old_prefix):]
 
+
+# ---------------------------------------------------------------------------
+# Apply heading styles (with optional Track Changes recording)
+# ---------------------------------------------------------------------------
 
 def apply_heading_styles(
     doc: Document,
@@ -850,28 +721,19 @@ def apply_heading_styles(
     track_changes: bool = False,
     author: str = "Word-Gliederungs-Retter",
 ) -> None:
-    """
-    Apply Heading 1-9 styles and write literal 1. / 1.1 / 1.1.1 … numbering
-    directly into each heading paragraph's text.
+    """Apply Heading 1-9 styles and write literal 1. / 1.1 / 1.1.1 … prefixes.
 
-    Writing the number as **visible text** (not as OOXML automatic numbering)
-    guarantees the document looks different when opened in any Word version or
-    viewer.  The Heading styles give the document proper structure so the user
-    can navigate, collapse/expand sections and continue the outline.
+    Freeze-before-change guarantees the heading style switch cannot alter the
+    visual appearance of any paragraph.  Only the numbering prefix changes.
 
-    In *track_changes* mode every change is recorded:
-    - Style change    → ``w:pPrChange`` (shown in Word's revision panel)
-    - Old prefix text → ``w:del``       (shown struck-through in red)
-    - New prefix text → ``w:ins``       (shown underlined in red)
+    Track-changes mode records every modification as OOXML revision marks.
     """
     number_strings = compute_number_strings(headings)
-
     date_str = (
         datetime.datetime.now(datetime.timezone.utc)
         .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 
-    # Find highest existing tracked-change ID to avoid ID conflicts
     existing_ids = [
         int(el.get(qn("w:id")))
         for el in doc.element.body.iter()
@@ -886,22 +748,19 @@ def apply_heading_styles(
         try:
             target_style = doc.styles[style_name]
         except KeyError:
-            continue  # Style not in document – skip
+            continue
 
         # ── Compute new text ──────────────────────────────────────────────
         number_str = number_strings.get(para_idx, "")
         raw_text   = para.text
         body, old_prefix = _split_prefix(raw_text)
-        if not body:          # entire text looked like a prefix – keep it all
+        if not body:
             body       = raw_text
             old_prefix = ""
         new_prefix = f"{number_str} " if number_str else ""
         new_text   = new_prefix + body
 
-        # ── 1. Freeze current formatting so style change doesn't alter looks ─
-        _freeze_run_formatting(para, doc)
-
-        # ── 2. Apply Heading style ────────────────────────────────────────
+        # ── Determine whether the style actually needs to change ──────────
         current_style_id = None
         pPr = para._p.find(qn("w:pPr"))
         if pPr is not None:
@@ -910,6 +769,13 @@ def apply_heading_styles(
                 current_style_id = ps.get(qn("w:val"))
         style_already_correct = (current_style_id == target_style.style_id)
 
+        # ── Freeze formatting ONLY when a style change is about to happen ─
+        # If the style is already correct we skip the freeze to avoid
+        # unnecessarily expanding every run's rPr with redundant attributes.
+        if not style_already_correct:
+            _freeze_run_formatting(para, doc)
+
+        # ── Apply Heading style ────────────────────────────────────────────
         if track_changes and not style_already_correct:
             if pPr is None:
                 pPr = OxmlElement("w:pPr")
@@ -934,17 +800,16 @@ def apply_heading_styles(
         elif not style_already_correct:
             para.style = target_style
 
-        # ── 3. Rewrite paragraph text with the new number prefix ──────────
+        # ── Rewrite paragraph text with the new number prefix ─────────────
         if raw_text == new_text:
-            continue  # already correct (e.g. already "1. Heading")
+            continue
 
         first_run_el = para._p.find(qn("w:r"))
-        first_rPr: object = None
+        first_rPr = None
         if first_run_el is not None:
             first_rPr = first_run_el.find(qn("w:rPr"))
 
         if track_changes:
-            # w:del  →  struck-through old prefix
             if old_prefix:
                 del_el = OxmlElement("w:del")
                 del_el.set(qn("w:id"), str(change_id))
@@ -954,9 +819,7 @@ def apply_heading_styles(
                 if first_rPr is not None:
                     del_run.append(copy.deepcopy(first_rPr))
                 del_text = OxmlElement("w:delText")
-                del_text.set(
-                    "{http://www.w3.org/XML/1998/namespace}space", "preserve"
-                )
+                del_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
                 del_text.text = old_prefix
                 del_run.append(del_text)
                 del_el.append(del_run)
@@ -966,7 +829,6 @@ def apply_heading_styles(
                     para._p.append(del_el)
                 change_id += 1
 
-            # w:ins  →  underlined new prefix
             if new_prefix:
                 ins_el = OxmlElement("w:ins")
                 ins_el.set(qn("w:id"), str(change_id))
@@ -976,9 +838,7 @@ def apply_heading_styles(
                 if first_rPr is not None:
                     ins_run.append(copy.deepcopy(first_rPr))
                 ins_text = OxmlElement("w:t")
-                ins_text.set(
-                    "{http://www.w3.org/XML/1998/namespace}space", "preserve"
-                )
+                ins_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
                 ins_text.text = new_prefix
                 ins_run.append(ins_text)
                 ins_el.append(ins_run)
@@ -988,19 +848,19 @@ def apply_heading_styles(
                     para._p.append(ins_el)
                 change_id += 1
 
-            # Remove old prefix from runs; body runs are untouched
+            # Remove old prefix; body runs are NOT touched
             _replace_prefix_in_para(para, old_prefix, "")
         else:
-            # Direct mode: replace old prefix with new prefix surgically
+            # Direct mode: surgical in-place prefix replacement
             _replace_prefix_in_para(para, old_prefix, new_prefix)
 
 
 # ---------------------------------------------------------------------------
-# .doc → .docx conversion via LibreOffice
+# .doc / .rtf → .docx conversion via LibreOffice
 # ---------------------------------------------------------------------------
 
 def convert_doc_to_docx(doc_path: str) -> str:
-    """Convert a legacy .doc file to .docx using LibreOffice (headless)."""
+    """Convert a .doc or .rtf file to .docx using LibreOffice (headless)."""
     tmp_dir = tempfile.mkdtemp()
     soffice_candidates = [
         "soffice",
@@ -1012,15 +872,8 @@ def convert_doc_to_docx(doc_path: str) -> str:
     for soffice in soffice_candidates:
         try:
             result = subprocess.run(
-                [
-                    soffice,
-                    "--headless",
-                    "--convert-to",
-                    "docx",
-                    "--outdir",
-                    tmp_dir,
-                    doc_path,
-                ],
+                [soffice, "--headless", "--convert-to", "docx",
+                 "--outdir", tmp_dir, doc_path],
                 capture_output=True,
                 timeout=60,
             )
@@ -1040,16 +893,11 @@ def convert_doc_to_docx(doc_path: str) -> str:
 # .txt → python-docx Document  (plain-text import)
 # ---------------------------------------------------------------------------
 
-def _load_txt_as_document(txt_path: str) -> "Document":
-    """Read a plain-text file and return a python-docx Document.
-
-    Each non-empty line becomes a paragraph.  Empty lines are preserved as
-    blank paragraphs so the visual spacing is maintained.
-    """
+def _load_txt_as_document(txt_path: str) -> Document:
+    """Read a plain-text file and return a python-docx Document."""
     with open(txt_path, "r", encoding="utf-8", errors="replace") as fh:
         lines = fh.read().splitlines()
     doc = Document()
-    # Remove the default empty paragraph that python-docx inserts
     for p in list(doc.paragraphs):
         p._element.getparent().remove(p._element)
     for line in lines:
@@ -1068,20 +916,9 @@ def process_document(
     ai_engine=None,
     progress_callback=None,
 ) -> int:
-    """
-    Full pipeline: load → detect headings → apply styles → add numbering → save.
+    """Full pipeline: load → detect headings → apply styles → save.
 
-    Args:
-        input_path:        Path to the source .doc or .docx file.
-        output_path:       Where to write the standardised .docx file.
-        track_changes:     If True, style changes are recorded as OOXML
-                           tracked changes (w:pPrChange).
-        ai_engine:         Optional AIEngine instance; used when the document
-                           does not contain standard heading styles.
-        progress_callback: Callable(message: str) for UI status updates.
-
-    Returns:
-        Number of heading paragraphs found and standardised.
+    Returns number of heading paragraphs standardised.
     """
 
     def progress(msg: str):
@@ -1093,12 +930,11 @@ def process_document(
     path = input_path
     ext = Path(path).suffix.lower()
 
-    # .rtf and legacy .doc → convert to .docx via LibreOffice first
     if ext in (".doc", ".rtf"):
         path = convert_doc_to_docx(path)
         ext = ".docx"
 
-    # ── Step 2: Load document and detect headings ──────────────────────────
+    # ── Step 2: Load document ──────────────────────────────────────────────
     progress("Schritt 2/4 – Überschriften analysieren …")
 
     if ext == ".txt":
@@ -1107,10 +943,6 @@ def process_document(
         try:
             doc = Document(path)
         except Exception as open_err:
-            # The file has a .docx extension but is not a valid OOXML ZIP package.
-            # This happens with old .doc binary files that were renamed to .docx,
-            # or with files downloaded from SharePoint / OneDrive in legacy format.
-            # Try LibreOffice conversion as a fallback.
             try:
                 converted = convert_doc_to_docx(path)
                 doc = Document(converted)
@@ -1125,10 +957,9 @@ def process_document(
                     "Lösung: Datei in Word öffnen und als .docx neu speichern."
                 ) from open_err
 
-    # Use AI if available; otherwise fall back to heuristic detection
+    # ── Detect headings ────────────────────────────────────────────────────
     if ai_engine and ai_engine.api_key:
         headings = ai_engine.analyze_headings(doc)
-        # Supplement with style-based detection for any headings the AI missed
         style_headings = detect_headings(doc)
         for idx, lvl in style_headings.items():
             if idx not in headings:
@@ -1138,13 +969,10 @@ def process_document(
 
     headings = normalize_levels(headings)
 
-    # ── Step 3: No automatic OOXML numbering needed ──────────────────────────
-    # Literal numbers are written into the paragraph text in step 4, so no
-    # multilevel-list numPr is attached to styles.  Attaching numPr to styles
-    # AND writing literal text would produce double numbering ("1. 1. Title").
+    # ── Step 3 (no OOXML auto-numbering — literal numbers are written instead)
     progress("Schritt 3/4 – Nummerierung einrichten …")
 
-    # ── Step 4: Apply heading styles + write literal 1./1.1/1.1.1 numbers ───
+    # ── Step 4: Apply heading styles + literal 1./1.1/1.1.1 numbers ───────
     progress("Schritt 4/4 – Gliederung standardisieren …")
     apply_heading_styles(doc, headings, track_changes=track_changes)
 
