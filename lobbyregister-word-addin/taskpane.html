@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lobbyregister</title>
+
+  <!-- Office.js -->
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js" type="text/javascript"></script>
+
+  <!-- Fluent UI Icons -->
+  <link rel="stylesheet" href="https://static2.sharepointonline.com/files/fabric/office-ui-fabric-core/11.0.0/css/fabric.min.css" />
+
+  <link rel="stylesheet" href="taskpane.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <div class="header-row">
+        <i class="ms-Icon ms-Icon--Library header-icon"></i>
+        <h1>Lobbyregister</h1>
+      </div>
+      <p class="header-sub">Deutscher Bundestag</p>
+    </header>
+
+    <!-- Search View -->
+    <section id="search-view" class="view active">
+      <!-- Search Bar -->
+      <div class="search-bar">
+        <div class="search-input-wrap">
+          <i class="ms-Icon ms-Icon--Search search-icon"></i>
+          <input
+            type="text"
+            id="search-input"
+            placeholder="Name, Register-Nr. oder Stichwort..."
+            autocomplete="off"
+          />
+          <button id="btn-clear-search" class="btn-icon hidden" title="Suche loeschen">
+            <i class="ms-Icon ms-Icon--Cancel"></i>
+          </button>
+        </div>
+        <button id="btn-search" class="btn-primary">
+          <i class="ms-Icon ms-Icon--Search"></i>
+          <span>Suchen</span>
+        </button>
+      </div>
+
+      <!-- Filter Toggle -->
+      <button id="btn-toggle-filters" class="btn-link">
+        <i class="ms-Icon ms-Icon--Filter"></i>
+        <span>Filter anzeigen</span>
+      </button>
+
+      <!-- Filters Panel -->
+      <div id="filters-panel" class="filters-panel hidden">
+        <div class="filter-group">
+          <label for="filter-activity">Taetigkeitsbereich</label>
+          <select id="filter-activity">
+            <option value="">Alle</option>
+            <option value="ACT_CONSULTING">Beratungsunternehmen</option>
+            <option value="ACT_EMPLOYER_ASSOC">Arbeitgeberverband</option>
+            <option value="ACT_EMPLOYEE_ASSOC">Arbeitnehmerverband</option>
+            <option value="ACT_TRADE_ASSOC">Wirtschaftsverband</option>
+            <option value="ACT_PROFESSION_ASSOC">Berufsverband</option>
+            <option value="ACT_NONPROFIT_ORGA">Nichtregierungsorganisation</option>
+            <option value="ACT_RESEARCH_FACILITY">Forschungseinrichtung</option>
+            <option value="ACT_RELIGIOUS_GROUP">Religionsgemeinschaft</option>
+            <option value="ACT_PUBLIC_LAW_ORGA">Oeffentlich-rechtliche Organisation</option>
+            <option value="ACT_PRIVATE">Privatperson</option>
+            <option value="ACT_PRIVATE_ORGA">Privatrechtliche Organisation</option>
+            <option value="ACT_ORGANIZATION">Sonstige Organisation</option>
+            <option value="ACT_LAWYER">Anwaltskanzlei</option>
+            <option value="ACT_OTHER">Sonstige</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="filter-interest">Interessenbereich</label>
+          <select id="filter-interest">
+            <option value="">Alle</option>
+            <option value="FOI_AGRICULTURE">Ernaehrung und Landwirtschaft</option>
+            <option value="FOI_LABOUR">Arbeit und Soziales</option>
+            <option value="FOI_FOREIGN_AFFAIRS">Auswaertiges</option>
+            <option value="FOI_EDUCATION">Bildung und Forschung</option>
+            <option value="FOI_DIGITAL">Digitales</option>
+            <option value="FOI_ENERGY">Energie</option>
+            <option value="FOI_EU">Europapolitik</option>
+            <option value="FOI_FINANCE">Finanzen</option>
+            <option value="FOI_HEALTH">Gesundheit</option>
+            <option value="FOI_INTERIOR">Inneres und Heimat</option>
+            <option value="FOI_JUSTICE">Justiz und Verbraucherschutz</option>
+            <option value="FOI_CULTURE">Kultur und Medien</option>
+            <option value="FOI_ENVIRONMENT">Umwelt und Naturschutz</option>
+            <option value="FOI_DEFENSE">Verteidigung</option>
+            <option value="FOI_ECONOMY">Wirtschaft</option>
+            <option value="FOI_HOUSING">Wohnen, Stadtentwicklung, Bauwesen</option>
+            <option value="FOI_DEVELOPMENT">Wirtschaftliche Zusammenarbeit</option>
+            <option value="FOI_TRANSPORT">Verkehr</option>
+            <option value="FOI_FAMILY">Familie, Senioren, Frauen, Jugend</option>
+            <option value="FOI_OTHER">Sonstiges</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="filter-legalform">Rechtsform</label>
+          <select id="filter-legalform">
+            <option value="">Alle</option>
+            <option value="JURISTIC_PERSON">Juristische Person</option>
+            <option value="LEGAL_ASSOCIATION">Rechtsfaehige Personengesellschaft</option>
+            <option value="OTHER_ASSOCIATION_OF_PERSONS">Sonstiger Personenzusammenschluss</option>
+            <option value="NETWORK_PLATFORM_OR_OTHER">Netzwerk, Plattform oder Sonstiges</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label>Mitgliederzahl</label>
+          <div class="filter-row">
+            <input type="number" id="filter-members-from" placeholder="Von" min="0" />
+            <span class="filter-sep">&ndash;</span>
+            <input type="number" id="filter-members-to" placeholder="Bis" min="0" />
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <label for="filter-sort">Sortierung</label>
+          <select id="filter-sort">
+            <option value="NAME_ASC">Name (A-Z)</option>
+            <option value="NAME_DESC">Name (Z-A)</option>
+            <option value="REGISTRATION_DESC">Registrierung (neueste)</option>
+            <option value="REGISTRATION_ASC">Registrierung (aelteste)</option>
+            <option value="NUMBEROFEMPLOYEES_DESC">Beschaeftigte (absteigend)</option>
+            <option value="FINANCIALEXPENSES_DESC">Finanzaufwand (absteigend)</option>
+          </select>
+        </div>
+
+        <div class="filter-actions">
+          <button id="btn-apply-filters" class="btn-primary btn-sm">Filter anwenden</button>
+          <button id="btn-reset-filters" class="btn-secondary btn-sm">Zuruecksetzen</button>
+        </div>
+      </div>
+
+      <!-- Results Info -->
+      <div id="results-info" class="results-info hidden">
+        <span id="results-count"></span>
+        <button id="btn-insert-all-table" class="btn-link btn-sm" title="Alle Ergebnisse als Tabelle einfuegen">
+          <i class="ms-Icon ms-Icon--Table"></i>
+          <span>Alle als Tabelle</span>
+        </button>
+      </div>
+
+      <!-- Results List -->
+      <div id="results-list" class="results-list"></div>
+
+      <!-- Pagination -->
+      <div id="pagination" class="pagination hidden">
+        <button id="btn-prev" class="btn-secondary btn-sm" disabled>
+          <i class="ms-Icon ms-Icon--ChevronLeft"></i> Zurueck
+        </button>
+        <span id="page-info"></span>
+        <button id="btn-next" class="btn-secondary btn-sm" disabled>
+          Weiter <i class="ms-Icon ms-Icon--ChevronRight"></i>
+        </button>
+      </div>
+
+      <!-- Empty State -->
+      <div id="empty-state" class="empty-state">
+        <i class="ms-Icon ms-Icon--SearchIssue empty-icon"></i>
+        <p>Geben Sie einen Suchbegriff ein oder verwenden Sie die Filter, um das Lobbyregister zu durchsuchen.</p>
+      </div>
+
+      <!-- Loading -->
+      <div id="loading" class="loading hidden">
+        <div class="spinner"></div>
+        <p>Lade Ergebnisse...</p>
+      </div>
+
+      <!-- Error -->
+      <div id="error-state" class="error-state hidden">
+        <i class="ms-Icon ms-Icon--ErrorBadge error-icon"></i>
+        <p id="error-message"></p>
+        <button id="btn-retry" class="btn-secondary btn-sm">Erneut versuchen</button>
+      </div>
+    </section>
+
+    <!-- Detail View -->
+    <section id="detail-view" class="view">
+      <button id="btn-back" class="btn-link">
+        <i class="ms-Icon ms-Icon--Back"></i>
+        <span>Zurueck zur Suche</span>
+      </button>
+
+      <div id="detail-content"></div>
+
+      <div id="detail-actions" class="detail-actions">
+        <button id="btn-insert-detail" class="btn-primary">
+          <i class="ms-Icon ms-Icon--AddToShoppingList"></i>
+          In Dokument einfuegen
+        </button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden">
+    <i class="ms-Icon ms-Icon--Completed toast-icon"></i>
+    <span id="toast-message"></span>
+  </div>
+
+  <script src="taskpane.js"></script>
+</body>
+</html>
