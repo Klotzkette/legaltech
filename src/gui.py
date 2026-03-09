@@ -626,7 +626,7 @@ class SettingsDialog(QDialog):
 
         layout.addSpacing(8)
 
-        model_label = QLabel("\u2728  Modell: GPT-5.2")
+        model_label = QLabel("\u2728  Modell: GPT-5.4")
         model_label.setStyleSheet(
             f"color: {ACCENT}; font-size: 12px; "
             f"background-color: #EBF4FF; "
@@ -841,7 +841,7 @@ class MainWindow(QMainWindow):
         title_layout.addStretch()
         header.addLayout(title_layout, stretch=1)
 
-        self.model_pill = QLabel("GPT-5.2")
+        self.model_pill = QLabel("GPT-5.4")
         self.model_pill.setObjectName("modelPill")
         self._update_model_pill()
         header.addWidget(self.model_pill, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -910,7 +910,7 @@ class MainWindow(QMainWindow):
     def _update_model_pill(self):
         has_key = bool(load_api_key())
         if has_key:
-            self.model_pill.setText("GPT-5.2  \u00b7  KI aktiv")
+            self.model_pill.setText("GPT-5.4  \u00b7  KI aktiv")
             self.model_pill.setStyleSheet("")
         else:
             self.model_pill.setText("Offline-Modus")

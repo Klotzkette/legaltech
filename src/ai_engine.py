@@ -1,5 +1,5 @@
 """
-AI Engine – GPT-5.2 powered heading detection for Word documents.
+AI Engine – GPT-5.4 powered heading detection for Word documents.
 
 Sends document paragraph data to the AI and receives back a structured
 list of heading assignments (paragraph index → heading level 1-9).
@@ -9,7 +9,7 @@ import json
 import re
 from typing import Dict, List, Optional
 
-MODEL = "gpt-4o"
+MODEL = "gpt-5.4"
 
 # How many paragraphs to send per AI request
 CHUNK_SIZE = 150
