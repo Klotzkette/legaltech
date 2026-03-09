@@ -7,6 +7,7 @@ list of heading assignments (paragraph index → heading level 1-9).
 
 import json
 import re
+import time
 from typing import Dict, List, Optional
 
 MODEL = "gpt-5.4"
@@ -166,7 +167,13 @@ def _parse_response(content: str) -> Dict[int, int]:
     for h in data.get("headings", []):
         idx = h.get("index")
         lvl = h.get("level")
-        if isinstance(idx, int) and isinstance(lvl, int) and 1 <= lvl <= 9:
+        # JSON numbers are sometimes parsed as float (e.g. 2.0); cast to int
+        try:
+            idx = int(idx)
+            lvl = int(lvl)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= lvl <= 9 and idx >= 0:
             result[idx] = lvl
     return result
 
@@ -205,27 +212,37 @@ class AIEngine:
                 progress_callback(int((idx / len(chunks)) * 100))
 
             user_prompt = _build_user_prompt(chunk)
-            try:
-                client = self._get_client()
-                response = client.chat.completions.create(
-                    model=MODEL,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.0,
-                    response_format={"type": "json_object"},
-                    max_completion_tokens=4096,
-                )
-                content = response.choices[0].message.content
-                if content:
-                    chunk_result = _parse_response(content)
-                    all_headings.update(chunk_result)
-            except Exception as exc:
-                # API failure → silently skip this chunk; heuristic detection
-                # in process_document will supplement any missed headings.
+            last_exc: Optional[Exception] = None
+            for attempt in range(3):          # up to 3 attempts (0, 1, 2)
+                if attempt > 0:
+                    time.sleep(2 ** attempt)  # 2s, 4s backoff
+                try:
+                    client = self._get_client()
+                    response = client.chat.completions.create(
+                        model=MODEL,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=0.0,
+                        response_format={"type": "json_object"},
+                        max_completion_tokens=4096,
+                    )
+                    content = response.choices[0].message.content
+                    if content:
+                        chunk_result = _parse_response(content)
+                        all_headings.update(chunk_result)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+            if last_exc is not None:
+                # All retries exhausted → fall back to heuristic detection
                 import warnings
-                warnings.warn(f"AI chunk {idx} failed ({exc}); falling back to heuristic.")
+                warnings.warn(
+                    f"AI chunk {idx} failed after 3 attempts ({last_exc}); "
+                    "falling back to heuristic."
+                )
 
         if progress_callback:
             progress_callback(100)

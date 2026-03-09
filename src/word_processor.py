@@ -11,6 +11,7 @@ import copy
 import datetime
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -146,7 +147,7 @@ def _is_heading_heuristic(para) -> bool:
         return False
     if text.startswith(("•", "–", "-", "*", "(", "[")):
         return False
-    if re.search(r"[.,;!?]\s*$", text):
+    if re.search(r"[.,;!?:]\s*$", text):
         return False
 
     words = text.split()
@@ -507,7 +508,34 @@ def _collect_rpr_chain(para, run, doc) -> Dict[str, object]:
                 result[local] = child
 
     # 1. Run's own rPr
-    _scan_rpr(run._r.find(f"{_WP}rPr"))
+    run_rPr_el = run._r.find(f"{_WP}rPr")
+    _scan_rpr(run_rPr_el)
+
+    # 1b. Walk the run's character style (w:rStyle) chain, if any.
+    #     Character styles can carry bold/color/font that must be preserved.
+    if run_rPr_el is not None:
+        rStyle_el = run_rPr_el.find(f"{_WP}rStyle")
+        if rStyle_el is not None:
+            rStyle_val = rStyle_el.get(f"{_WP}val")
+            if rStyle_val:
+                _visited_char: set = set()
+                for sty_candidate in doc.styles:
+                    try:
+                        if sty_candidate.style_id == rStyle_val:
+                            cs = sty_candidate
+                            while cs is not None:
+                                cid = getattr(cs, "style_id", id(cs))
+                                if cid in _visited_char:
+                                    break
+                                _visited_char.add(cid)
+                                try:
+                                    _scan_rpr(cs.element.find(f"{_WP}rPr"))
+                                except Exception:
+                                    pass
+                                cs = getattr(cs, "base_style", None)
+                            break
+                    except Exception:
+                        pass
 
     # 2. Paragraph-mark rPr  (pPr/rPr)
     pPr = para._p.find(f"{_WP}pPr")
@@ -558,11 +586,20 @@ def _freeze_run_formatting(para, doc) -> None:
             run_rPr = OxmlElement("w:rPr")
             run._r.insert(0, run_rPr)
 
+        # If this run has a character style (w:rStyle), those style properties
+        # are already resolved into `eff` via the rStyle chain walk above.
+        # Do NOT add fallback overrides (b=0, i=0, color=auto) for runs with
+        # a rStyle because the character style is the authoritative source.
+        has_rStyle = run_rPr.find(f"{_WP}rStyle") is not None
+
         # Copy every effective property that is not already explicit on this run
         for tag in _RPR_VISUAL_TAGS:
             if run_rPr.find(f"{_WP}{tag}") is None:
                 if tag in eff:
                     run_rPr.append(copy.deepcopy(eff[tag]))
+                elif has_rStyle:
+                    # Character style may provide this property; don't override
+                    pass
                 elif tag == "b":
                     # No bold defined anywhere in chain → explicitly NOT bold
                     # (Heading styles are bold by default; this blocks that)
@@ -643,7 +680,11 @@ def _freeze_para_properties(para) -> None:
             sp.set(qn("w:before"), "0")
             sp.set(qn("w:after"), "0")
             pPr.append(sp)
-        # jc: leave absent when not found (body and heading are both usually left)
+        elif tag == "jc":
+            # No justification found → write left to block any heading center/justify
+            jc = OxmlElement("w:jc")
+            jc.set(qn("w:val"), "left")
+            pPr.append(jc)
 
 
 # ---------------------------------------------------------------------------
@@ -860,8 +901,13 @@ def apply_heading_styles(
 # ---------------------------------------------------------------------------
 
 def convert_doc_to_docx(doc_path: str) -> str:
-    """Convert a .doc or .rtf file to .docx using LibreOffice (headless)."""
-    tmp_dir = tempfile.mkdtemp()
+    """Convert a .doc or .rtf file to .docx using LibreOffice (headless).
+
+    The converted file is written to a temporary directory.  The caller is
+    responsible for cleaning it up via ``cleanup_converted_tmp`` or by passing
+    the returned path to ``_cleanup_tmp_docx`` after loading the document.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="gliederungsretter_")
     soffice_candidates = [
         "soffice",
         "/usr/bin/soffice",
@@ -883,6 +929,7 @@ def convert_doc_to_docx(doc_path: str) -> str:
                     return str(out)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
+    shutil.rmtree(tmp_dir, ignore_errors=True)
     raise RuntimeError(
         "LibreOffice wurde nicht gefunden. "
         "Bitte die .doc-Datei zunächst in Word als .docx speichern."
@@ -927,11 +974,19 @@ def process_document(
 
     # ── Step 1: Prepare input ──────────────────────────────────────────────
     progress("Schritt 1/4 – Datei vorbereiten …")
+
+    # Ensure the output directory exists
+    out_dir = Path(output_path).parent
+    if not out_dir.exists():
+        out_dir.mkdir(parents=True, exist_ok=True)
+
     path = input_path
     ext = Path(path).suffix.lower()
+    _tmp_dir_to_clean: Optional[str] = None
 
     if ext in (".doc", ".rtf"):
         path = convert_doc_to_docx(path)
+        _tmp_dir_to_clean = str(Path(path).parent)
         ext = ".docx"
 
     # ── Step 2: Load document ──────────────────────────────────────────────
@@ -945,8 +1000,11 @@ def process_document(
         except Exception as open_err:
             try:
                 converted = convert_doc_to_docx(path)
+                _tmp_dir_to_clean = str(Path(converted).parent)
                 doc = Document(converted)
             except Exception:
+                if _tmp_dir_to_clean:
+                    shutil.rmtree(_tmp_dir_to_clean, ignore_errors=True)
                 raise RuntimeError(
                     f"Die Datei konnte nicht geöffnet werden: {open_err}\n\n"
                     "Mögliche Ursachen:\n"
@@ -977,4 +1035,9 @@ def process_document(
     apply_heading_styles(doc, headings, track_changes=track_changes)
 
     doc.save(output_path)
+
+    # Clean up any LibreOffice temp directory created during conversion
+    if _tmp_dir_to_clean:
+        shutil.rmtree(_tmp_dir_to_clean, ignore_errors=True)
+
     return len(headings)

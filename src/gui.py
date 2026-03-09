@@ -1023,6 +1023,24 @@ class MainWindow(QMainWindow):
         if not output_path.lower().endswith(".docx"):
             output_path += ".docx"
 
+        # Guard: output must not overwrite the source file
+        try:
+            same_file = os.path.abspath(output_path) == os.path.abspath(self.current_file)
+        except Exception:
+            same_file = False
+        if same_file:
+            QMessageBox.warning(
+                self,
+                "Ungültiger Pfad",
+                "Die Ausgabedatei darf nicht identisch mit der Quelldatei sein.\n"
+                "Bitte einen anderen Dateinamen wählen.",
+            )
+            self.drop_zone.set_state(DropZone.STATE_IDLE)
+            self.file_label.setText("")
+            self.current_file = None
+            self._update_statusbar_idle()
+            return
+
         save_output_dir(os.path.dirname(output_path))
 
         # Launch processing
